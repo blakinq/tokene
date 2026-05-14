@@ -335,6 +335,10 @@ export type Database = {
         Args: { p_token: string };
         Returns: string;
       };
+      create_workspace: {
+        Args: { p_name: string; p_slug: string; p_product?: string | null };
+        Returns: string;
+      };
     };
     Enums: {
       workspace_role: WorkspaceRole;

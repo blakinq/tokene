@@ -35,7 +35,7 @@ export async function createWorkspaceAction(
     };
   }
 
-  const { supabase, user } = await getCurrentUserOrRedirect();
+  const { supabase } = await getCurrentUserOrRedirect();
 
   // Resolve a unique slug by appending a numeric suffix when needed.
   let slug = baseSlug;
@@ -49,35 +49,17 @@ export async function createWorkspaceAction(
     slug = `${baseSlug}-${i}`;
   }
 
-  const { data: inserted, error } = await supabase
-    .from("workspaces")
-    .insert({
-      name,
-      slug,
-      product: product || null,
-      created_by: user.id,
-    } as never)
-    .select("id")
-    .single();
+  const { data: workspaceId, error } = await supabase.rpc("create_workspace", {
+    p_name: name,
+    p_slug: slug,
+    p_product: product || null,
+  } as never);
 
-  if (error || !inserted) {
+  if (error || !workspaceId) {
     return {
       ok: false,
       error: error?.message ?? "Failed to create workspace.",
     };
-  }
-  const workspaceId = (inserted as { id: string }).id;
-
-  const { error: memberError } = await supabase
-    .from("workspace_members")
-    .insert({
-      workspace_id: workspaceId,
-      user_id: user.id,
-      role: "admin",
-    } as never);
-
-  if (memberError) {
-    return { ok: false, error: memberError.message };
   }
 
   await supabase.rpc("record_audit", {
