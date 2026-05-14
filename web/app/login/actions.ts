@@ -8,6 +8,7 @@ import { createSupabaseServerClient } from "@/lib/supabase/server";
 export async function signIn(_state: unknown, formData: FormData) {
   const email = String(formData.get("email") ?? "").trim();
   const password = String(formData.get("password") ?? "");
+  const inviteToken = String(formData.get("inviteToken") ?? "").trim();
 
   if (!email || !password) {
     return { error: "Email and password are required." };
@@ -21,6 +22,9 @@ export async function signIn(_state: unknown, formData: FormData) {
   }
 
   revalidatePath("/", "layout");
+  if (inviteToken) {
+    redirect(`/invite/${encodeURIComponent(inviteToken)}`);
+  }
   redirect("/tokens");
 }
 

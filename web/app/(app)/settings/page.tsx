@@ -26,11 +26,21 @@ import { SiteHeader } from "@/components/site-header";
 import { loadProfiles } from "@/lib/supabase/profiles";
 import { getCurrentWorkspaceOrRedirect } from "@/lib/supabase/queries";
 import { WorkspaceForm } from "./workspace-form";
+import { InviteForm } from "./invite-form";
+import { RevokeInviteButton } from "./revoke-invite-button";
 
 type MemberRow = {
   role: "viewer" | "contributor" | "reviewer" | "admin";
   user_id: string;
   created_at: string;
+};
+
+type InviteRow = {
+  id: string;
+  email: string;
+  role: "viewer" | "contributor" | "reviewer" | "admin";
+  created_at: string;
+  expires_at: string;
 };
 
 export default async function SettingsPage() {
@@ -48,6 +58,15 @@ export default async function SettingsPage() {
     supabase,
     members.map((m) => m.user_id),
   );
+
+  const { data: invitesRaw } = await supabase
+    .from("workspace_invites")
+    .select("id, email, role, created_at, expires_at")
+    .eq("workspace_id", workspace.workspaceId)
+    .is("accepted_at", null)
+    .is("revoked_at", null)
+    .order("created_at", { ascending: false });
+  const invites = (invitesRaw ?? []) as unknown as InviteRow[];
 
   return (
     <>
@@ -105,6 +124,73 @@ export default async function SettingsPage() {
           </TabsContent>
 
           <TabsContent value="members" className="flex flex-col gap-6">
+            {isAdmin ? (
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base font-medium">
+                    Invite a teammate
+                  </CardTitle>
+                  <CardDescription>
+                    Generate a one-time link tied to an email and role. Share
+                    it directly; the recipient signs up or in to join.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <InviteForm />
+                </CardContent>
+              </Card>
+            ) : null}
+
+            {invites.length > 0 ? (
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base font-medium">
+                    Pending invites
+                    <span className="text-muted-foreground ml-2 font-mono text-sm">
+                      {invites.length}
+                    </span>
+                  </CardTitle>
+                  <CardDescription>
+                    Awaiting acceptance. Expires 14 days after creation.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <ul className="flex flex-col">
+                    {invites.map((inv) => {
+                      const expires = new Date(inv.expires_at);
+                      const expiresLabel = Number.isNaN(expires.getTime())
+                        ? "—"
+                        : expires.toLocaleDateString();
+                      return (
+                        <li
+                          key={inv.id}
+                          className="border-border/60 flex items-center gap-3 border-b py-3 last:border-b-0"
+                        >
+                          <div className="flex min-w-0 flex-1 flex-col">
+                            <span className="truncate text-sm font-medium">
+                              {inv.email}
+                            </span>
+                            <span className="text-muted-foreground text-xs">
+                              Expires {expiresLabel}
+                            </span>
+                          </div>
+                          <Badge
+                            variant="outline"
+                            className="font-normal capitalize"
+                          >
+                            {inv.role}
+                          </Badge>
+                          {isAdmin ? (
+                            <RevokeInviteButton id={inv.id} />
+                          ) : null}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </CardContent>
+              </Card>
+            ) : null}
+
             <Card>
               <CardHeader>
                 <CardTitle className="text-base font-medium">

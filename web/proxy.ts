@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 
-const PUBLIC_PATHS = ["/login", "/auth/callback"];
+const PUBLIC_PATHS = ["/login", "/signup", "/auth/callback", "/invite"];
 
 export function proxy(request: NextRequest) {
   // Skip when Supabase env isn't configured (lets the app boot for

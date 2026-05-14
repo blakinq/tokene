@@ -154,6 +154,20 @@ type ReleaseLockRow = {
   expires_at: Timestamp;
 };
 
+type WorkspaceInviteRow = {
+  id: string;
+  workspace_id: string;
+  email: string;
+  role: WorkspaceRole;
+  token: string;
+  invited_by: string | null;
+  created_at: Timestamp;
+  expires_at: Timestamp;
+  accepted_at: Timestamp | null;
+  accepted_by: string | null;
+  revoked_at: Timestamp | null;
+};
+
 type ChangeRequestItemRow = {
   id: string;
   change_request_id: string;
@@ -274,6 +288,7 @@ export type Database = {
       audit_logs: Table<AuditLogRow>;
       comments: Table<CommentRow>;
       release_locks: Table<ReleaseLockRow>;
+      workspace_invites: Table<WorkspaceInviteRow>;
     };
     Views: Record<string, never>;
     Functions: {
@@ -303,6 +318,22 @@ export type Database = {
       release_publish_lock: {
         Args: { ws_id: string };
         Returns: void;
+      };
+      invite_lookup: {
+        Args: { p_token: string };
+        Returns: Array<{
+          workspace_id: string;
+          workspace_name: string;
+          workspace_product: string | null;
+          email: string;
+          role: WorkspaceRole;
+          expired: boolean;
+          consumed: boolean;
+        }>;
+      };
+      invite_accept: {
+        Args: { p_token: string };
+        Returns: string;
       };
     };
     Enums: {

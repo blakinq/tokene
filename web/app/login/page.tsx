@@ -1,6 +1,6 @@
+import Link from "next/link";
 import { redirect } from "next/navigation";
 
-import { Button } from "@/components/ui/button";
 import {
   Card,
   CardContent,
@@ -9,24 +9,25 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import {
-  Field,
-  FieldDescription,
-  FieldGroup,
-  FieldLabel,
-} from "@/components/ui/field";
-import { Input } from "@/components/ui/input";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
-import { signIn } from "./actions";
 import { SignInForm } from "./sign-in-form";
 
-export default async function LoginPage() {
+type Search = Promise<{ invite?: string }>;
+
+export default async function LoginPage({
+  searchParams,
+}: {
+  searchParams: Search;
+}) {
+  const { invite } = await searchParams;
   const supabase = await createSupabaseServerClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();
 
-  if (user) redirect("/tokens");
+  if (user) {
+    redirect(invite ? `/invite/${encodeURIComponent(invite)}` : "/tokens");
+  }
 
   return (
     <div className="bg-background flex min-h-svh items-center justify-center p-6">
@@ -35,17 +36,25 @@ export default async function LoginPage() {
           <CardTitle className="text-2xl font-semibold tracking-tight">
             Tokene
           </CardTitle>
-          <CardDescription>
-            Sign in to your workspace.
-          </CardDescription>
+          <CardDescription>Sign in to your workspace.</CardDescription>
         </CardHeader>
         <CardContent>
-          <SignInForm />
+          <SignInForm inviteToken={invite} />
         </CardContent>
         <CardFooter className="text-muted-foreground flex flex-col gap-1 text-center text-xs">
           <p>
-            Don&apos;t have an account? Add a user in your Supabase project&apos;s
-            Authentication tab.
+            Don&apos;t have an account?{" "}
+            <Link
+              href={
+                invite
+                  ? `/signup?invite=${encodeURIComponent(invite)}`
+                  : "/signup"
+              }
+              className="hover:text-foreground underline"
+            >
+              Create one
+            </Link>
+            .
           </p>
         </CardFooter>
       </Card>
