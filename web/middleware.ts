@@ -1,65 +1,41 @@
-import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
-
-import type { Database } from "@/lib/supabase/types";
 
 const PUBLIC_PATHS = ["/login", "/auth/callback"];
 
-export async function middleware(request: NextRequest) {
-  let response = NextResponse.next({ request });
-
+export function middleware(request: NextRequest) {
   // Skip middleware when Supabase env isn't configured (lets the app boot for
   // mock-data development).
   if (
     !process.env.NEXT_PUBLIC_SUPABASE_URL ||
     !process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
   ) {
-    return response;
+    return NextResponse.next();
   }
-
-  const supabase = createServerClient<Database>(
-    process.env.NEXT_PUBLIC_SUPABASE_URL,
-    process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY,
-    {
-      cookies: {
-        getAll() {
-          return request.cookies.getAll();
-        },
-        setAll(toSet) {
-          toSet.forEach(({ name, value }) => {
-            request.cookies.set(name, value);
-          });
-          response = NextResponse.next({ request });
-          toSet.forEach(({ name, value, options }) => {
-            response.cookies.set(name, value, options);
-          });
-        },
-      },
-    },
-  );
-
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
 
   const { pathname } = request.nextUrl;
   const isPublic = PUBLIC_PATHS.some(
     (p) => pathname === p || pathname.startsWith(`${p}/`),
   );
 
-  if (!user && !isPublic) {
+  // Optimistic auth check via cookie presence; RSCs call `supabase.auth.getUser()`
+  // for real validation and any needed token refresh. Importing `@supabase/ssr`
+  // here pulls Node-only globals (`__dirname`) into the edge bundle and crashes.
+  const hasAuthCookie = request.cookies
+    .getAll()
+    .some((c) => c.name.startsWith("sb-") && c.name.endsWith("-auth-token"));
+
+  if (!hasAuthCookie && !isPublic) {
     const url = request.nextUrl.clone();
     url.pathname = "/login";
     url.searchParams.set("next", pathname);
     return NextResponse.redirect(url);
   }
 
-  return response;
+  return NextResponse.next();
 }
 
 export const config = {
   matcher: [
     "/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
   ],
-  runtime: "nodejs",
 };
