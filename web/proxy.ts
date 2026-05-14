@@ -2,8 +2,8 @@ import { NextResponse, type NextRequest } from "next/server";
 
 const PUBLIC_PATHS = ["/login", "/auth/callback"];
 
-export function middleware(request: NextRequest) {
-  // Skip middleware when Supabase env isn't configured (lets the app boot for
+export function proxy(request: NextRequest) {
+  // Skip when Supabase env isn't configured (lets the app boot for
   // mock-data development).
   if (
     !process.env.NEXT_PUBLIC_SUPABASE_URL ||
