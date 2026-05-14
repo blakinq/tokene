@@ -1,0 +1,93 @@
+import { NextResponse } from "next/server";
+
+import { getCurrentWorkspaceOrRedirect } from "@/lib/supabase/queries";
+import { createSupabaseServiceClient } from "@/lib/supabase/service";
+import type { TokenType } from "@/lib/supabase/types";
+import type { SnapshotForExport } from "@/lib/core/exporters/css";
+
+export type ExportPayload = {
+  release: { id: string; version: string; status: string };
+  snapshots: SnapshotForExport[];
+  workspaceId: string;
+  userId: string;
+};
+
+export async function loadExportPayload(
+  releaseId: string,
+): Promise<ExportPayload | NextResponse> {
+  const { supabase, workspace, user } = await getCurrentWorkspaceOrRedirect();
+
+  const { data: release } = await supabase
+    .from("releases")
+    .select("id, version, status")
+    .eq("id", releaseId)
+    .eq("workspace_id", workspace.workspaceId)
+    .maybeSingle();
+
+  if (!release) {
+    return NextResponse.json({ error: "Release not found." }, { status: 404 });
+  }
+
+  const r = release as { id: string; version: string; status: string };
+
+  const { data: snapshots, error } = await supabase
+    .from("release_token_snapshots")
+    .select("name, type, value, resolved_value")
+    .eq("release_id", r.id)
+    .eq("workspace_id", workspace.workspaceId);
+
+  if (error) {
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+
+  return {
+    release: r,
+    snapshots: (snapshots ?? []).map((s) => {
+      const row = s as {
+        name: string;
+        type: TokenType;
+        value: string;
+        resolved_value: string;
+      };
+      return row;
+    }),
+    workspaceId: workspace.workspaceId,
+    userId: user.id,
+  };
+}
+
+export async function auditExport(
+  workspaceId: string,
+  releaseId: string,
+  format: string,
+  userId: string,
+  version: string,
+) {
+  try {
+    const service = createSupabaseServiceClient();
+    await service.rpc("record_audit" as never, {
+      ws_id: workspaceId,
+      p_action: "export.created",
+      p_entity_type: "Release",
+      p_entity_id: releaseId,
+      p_after: { format, actor_id: userId, version },
+    } as never);
+  } catch {
+    // best-effort
+  }
+}
+
+export function fileResponse(
+  body: string,
+  filename: string,
+  contentType: string,
+): NextResponse {
+  return new NextResponse(body, {
+    status: 200,
+    headers: {
+      "Content-Type": `${contentType}; charset=utf-8`,
+      "Content-Disposition": `attachment; filename="${filename}"`,
+      "Cache-Control": "no-store",
+    },
+  });
+}

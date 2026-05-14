@@ -1,0 +1,9 @@
+# Claude Code session state
+.claude/
+
+# Stray Supabase CLI cache at repo root
+supabase/.temp/
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
