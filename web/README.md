@@ -1,6 +1,6 @@
-# TokenOps · web
+# Tokene · web
 
-The web client for TokenOps — a multi-tenant app for managing design system tokens across design and engineering workflows. See [`../tokene.md`](../tokene.md) for the full architecture spec.
+The web client for Tokene — a multi-tenant app for managing design system tokens across design and engineering workflows. See [`../tokene.md`](../tokene.md) for the full architecture spec.
 
 ## Stack
 

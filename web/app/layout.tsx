@@ -11,7 +11,7 @@ const geist = Geist({ subsets: ["latin"], variable: "--font-sans" });
 const fontMono = Geist_Mono({ subsets: ["latin"], variable: "--font-mono" });
 
 export const metadata: Metadata = {
-  title: "TokenOps",
+  title: "Tokene",
   description:
     "Manage, review, and ship design tokens across design and engineering.",
 };

@@ -28,7 +28,7 @@ export function exportTypeScript(snapshots: SnapshotForExport[]): string {
     );
   }
   return [
-    `// TokenOps TypeScript export · exporter ${EXPORTER_VERSION}`,
+    `// Tokene TypeScript export · exporter ${EXPORTER_VERSION}`,
     `export const tokens = {`,
     ...entries,
     `} as const;`,

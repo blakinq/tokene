@@ -19,7 +19,7 @@ export function exportCss(snapshots: SnapshotForExport[]): string {
     (snap) => `  --${toCssName(snap.name)}: ${snap.resolved_value};`,
   );
   return [
-    `/* TokenOps CSS export · exporter ${EXPORTER_VERSION} */`,
+    `/* Tokene CSS export · exporter ${EXPORTER_VERSION} */`,
     `:root {`,
     ...lines,
     `}`,

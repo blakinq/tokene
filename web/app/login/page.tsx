@@ -33,7 +33,7 @@ export default async function LoginPage() {
       <Card className="w-full max-w-sm">
         <CardHeader className="text-center">
           <CardTitle className="text-2xl font-semibold tracking-tight">
-            TokenOps
+            Tokene
           </CardTitle>
           <CardDescription>
             Sign in to your workspace.

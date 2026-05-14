@@ -9,7 +9,7 @@ export function exportScss(snapshots: SnapshotForExport[]): string {
     (snap) => `$${toCssName(snap.name)}: ${snap.resolved_value};`,
   );
   return [
-    `// TokenOps SCSS export · exporter ${EXPORTER_VERSION}`,
+    `// Tokene SCSS export · exporter ${EXPORTER_VERSION}`,
     ...lines,
     "",
   ].join("\n");
