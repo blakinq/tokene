@@ -1,3 +1,5 @@
+import { ArrowLeft } from "lucide-react";
+import Link from "next/link";
 import { redirect } from "next/navigation";
 
 import {
@@ -51,7 +53,15 @@ export default async function SignUpPage({
 
   return (
     <div className="bg-background flex min-h-svh items-center justify-center p-6">
-      <Card className="w-full max-w-sm">
+      <div className="flex w-full max-w-sm flex-col gap-4">
+        <Link
+          href="/"
+          className="text-muted-foreground hover:text-foreground inline-flex items-center gap-1.5 self-start text-sm transition-colors"
+        >
+          <ArrowLeft className="size-4" />
+          Back
+        </Link>
+        <Card className="w-full">
         <CardHeader className="text-center">
           <CardTitle className="text-2xl font-semibold tracking-tight">
             Create your account
@@ -65,7 +75,8 @@ export default async function SignUpPage({
         <CardContent>
           <SignUpForm inviteToken={invite} defaultEmail={invitedEmail} />
         </CardContent>
-      </Card>
+        </Card>
+      </div>
     </div>
   );
 }
