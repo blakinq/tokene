@@ -6,6 +6,7 @@ import { redirect } from "next/navigation";
 import { extractReferences } from "@/lib/core/references";
 import { parseTokensJson } from "@/lib/core/importer";
 import { validateToken } from "@/lib/core/validation";
+import { dispatchExternalNotifications } from "@/lib/notifications/dispatch";
 import { getCurrentWorkspaceOrRedirect } from "@/lib/supabase/queries";
 import { loadSchemaConfig } from "@/lib/supabase/schema-config";
 
@@ -246,6 +247,14 @@ export async function importTokensAction(
     p_exclude_actor: true,
     p_role_at_least: "reviewer",
   } as never);
+  await dispatchExternalNotifications(workspace.workspaceId, {
+    kind: "change_request.submitted",
+    title: `${crRow.short_id} ready for review`,
+    body: crRow.title,
+    link: `/change-requests/${crId}`,
+    entityType: "ChangeRequest",
+    entityId: crId,
+  });
 
   revalidatePath("/imports");
   revalidatePath("/change-requests");

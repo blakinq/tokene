@@ -9,7 +9,8 @@ import {
 } from "@/components/ui/empty";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { FileClock } from "lucide-react";
+import { Download, FileClock } from "lucide-react";
+import Link from "next/link";
 import {
   Table,
   TableBody,
@@ -119,6 +120,21 @@ export default async function AuditPage({
     rows.map((r) => r.actor_id),
   );
 
+  // Carry the current filter set into the export URL so the download mirrors
+  // what the user sees in the table.
+  const exportParams = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (v && v !== "all") exportParams.set(k, v);
+  }
+  const exportCsvHref = `/api/audit/export?${new URLSearchParams({
+    ...Object.fromEntries(exportParams),
+    format: "csv",
+  }).toString()}`;
+  const exportJsonHref = `/api/audit/export?${new URLSearchParams({
+    ...Object.fromEntries(exportParams),
+    format: "json",
+  }).toString()}`;
+
   return (
     <>
       <SiteHeader
@@ -131,15 +147,31 @@ export default async function AuditPage({
         ]}
       />
       <div className="flex flex-col gap-8 p-6 md:p-8">
-        <div className="flex flex-col gap-2">
-          <span className="text-muted-foreground text-xs font-medium tracking-wider uppercase">
-            Data
-          </span>
-          <h1 className="text-3xl font-semibold tracking-tight">Audit log</h1>
-          <p className="text-muted-foreground max-w-2xl text-sm">
-            Tamper-resistant record of every security-sensitive or
-            production-impacting action.
-          </p>
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="flex flex-col gap-2">
+            <span className="text-muted-foreground text-xs font-medium tracking-wider uppercase">
+              Data
+            </span>
+            <h1 className="text-3xl font-semibold tracking-tight">Audit log</h1>
+            <p className="text-muted-foreground max-w-2xl text-sm">
+              Tamper-resistant record of every security-sensitive or
+              production-impacting action.
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button variant="outline" size="sm" asChild>
+              <Link href={exportCsvHref} prefetch={false} download>
+                <Download data-icon="inline-start" />
+                Export CSV
+              </Link>
+            </Button>
+            <Button variant="outline" size="sm" asChild>
+              <Link href={exportJsonHref} prefetch={false} download>
+                <Download data-icon="inline-start" />
+                Export JSON
+              </Link>
+            </Button>
+          </div>
         </div>
 
         <Card>

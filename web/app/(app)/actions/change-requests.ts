@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 
 import { validateToken } from "@/lib/core/validation";
+import { dispatchExternalNotifications } from "@/lib/notifications/dispatch";
 import { getCurrentWorkspaceOrRedirect } from "@/lib/supabase/queries";
 import {
   loadSchemaConfig,
@@ -91,6 +92,14 @@ async function dispatchSubmittedNotification(
     p_exclude_actor: true,
     p_role_at_least: "reviewer",
   } as never);
+  await dispatchExternalNotifications(workspaceId, {
+    kind: "change_request.submitted",
+    title: `${shortId} ready for review`,
+    body: title,
+    link: `/change-requests/${crId}`,
+    entityType: "ChangeRequest",
+    entityId: crId,
+  });
 }
 
 export type CreateCRState =
@@ -529,6 +538,14 @@ export async function approveChangeRequest(formData: FormData) {
         p_link: `/change-requests/${id}`,
       } as never);
     }
+    await dispatchExternalNotifications(workspace.workspaceId, {
+      kind: "change_request.approved",
+      title: `${cr.short_id} approved`,
+      body: cr.title,
+      link: `/change-requests/${id}`,
+      entityType: "ChangeRequest",
+      entityId: id,
+    });
   }
 
   revalidatePath(`/change-requests/${id}`);
@@ -586,6 +603,14 @@ export async function requestChangesOnCR(formData: FormData) {
         p_link: `/change-requests/${id}`,
       } as never);
     }
+    await dispatchExternalNotifications(workspace.workspaceId, {
+      kind: "change_request.changes_requested",
+      title: `${cr.short_id} needs changes`,
+      body: comment ?? cr.title,
+      link: `/change-requests/${id}`,
+      entityType: "ChangeRequest",
+      entityId: id,
+    });
   }
 
   revalidatePath(`/change-requests/${id}`);
@@ -698,4 +723,313 @@ export async function createLifecycleCR(formData: FormData) {
   revalidatePath("/change-requests");
   revalidatePath(`/tokens/${tok.id}`);
   redirect(`/change-requests/${crRow.id}`);
+}
+
+/**
+ * §3.4: propose a value edit to a published token via a new CR. Unlike
+ * `createChangeRequestForToken` (which assumes after == before and is really a
+ * "promote" path), this records a real `kind = "edit"` item where after_value
+ * differs from the live token's value. The token itself stays published — its
+ * value won't change until the CR is approved and a release is published.
+ */
+export type EditTokenCRState =
+  | { ok: true; crId: string }
+  | {
+      ok: false;
+      error: string;
+      issues?: { code: string; message: string; path?: string }[];
+    }
+  | null;
+
+export async function createEditCRForToken(
+  _prev: EditTokenCRState,
+  formData: FormData,
+): Promise<EditTokenCRState> {
+  const tokenId = String(formData.get("tokenId") ?? "");
+  const newValue = String(formData.get("value") ?? "").trim();
+  const title = String(formData.get("title") ?? "").trim();
+  const description = String(formData.get("description") ?? "").trim();
+  const migrationNotes = String(formData.get("migrationNotes") ?? "").trim();
+
+  if (!tokenId) return { ok: false, error: "Token id is required." };
+  if (!newValue) return { ok: false, error: "Provide a new value." };
+
+  const { supabase, workspace, user } = await getCurrentWorkspaceOrRedirect();
+
+  const { data: tokenRow } = await supabase
+    .from("tokens")
+    .select("id, name, type, level, current_value, status, description")
+    .eq("id", tokenId)
+    .eq("workspace_id", workspace.workspaceId)
+    .single();
+  if (!tokenRow) return { ok: false, error: "Token not found." };
+
+  const tok = tokenRow as {
+    id: string;
+    name: string;
+    type: string;
+    level: string;
+    current_value: string | null;
+    status: string;
+    description: string | null;
+  };
+
+  if (tok.status !== "published" && tok.status !== "deprecated") {
+    return {
+      ok: false,
+      error:
+        "Only published or deprecated tokens can be edited through this flow. Draft tokens can be attached directly to a change request.",
+    };
+  }
+
+  if ((tok.current_value ?? "") === newValue) {
+    return {
+      ok: false,
+      error: "New value matches the current value.",
+      issues: [
+        {
+          code: "value.unchanged",
+          message: "Pick a value different from the current published value.",
+          path: "value",
+        },
+      ],
+    };
+  }
+
+  // Build the tokensByName map and overlay the proposed edit so reference
+  // resolution sees the new value when validating downstream tokens that
+  // reference this one (matches the same overlay logic used at approval time).
+  const { data: tokenRows } = await supabase
+    .from("tokens")
+    .select("name, current_value")
+    .eq("workspace_id", workspace.workspaceId);
+
+  const tokensByName = new Map<string, string>();
+  for (const row of (tokenRows ?? []) as Array<{
+    name: string;
+    current_value: string | null;
+  }>) {
+    tokensByName.set(row.name, row.current_value ?? "");
+  }
+  tokensByName.set(tok.name, newValue);
+
+  const schema = await loadSchemaConfig(supabase, workspace.workspaceId);
+  const validation = validateToken({
+    name: tok.name,
+    type: tok.type,
+    value: newValue,
+    description: tok.description ?? undefined,
+    tokensByName,
+    schema,
+  });
+  if (!validation.valid) {
+    return {
+      ok: false,
+      error: "Validation failed.",
+      issues: validation.issues
+        .filter((i) => i.severity === "error")
+        .map(({ code, message, path }) => ({ code, message, path })),
+    };
+  }
+
+  const { count } = await supabase
+    .from("change_requests")
+    .select("*", { count: "exact", head: true })
+    .eq("workspace_id", workspace.workspaceId);
+  const shortId = `CR-${String((count ?? 0) + 1).padStart(3, "0")}`;
+
+  const breaking = computeBreakingForItems([
+    {
+      kind: "edit",
+      before_value: tok.current_value,
+      after_value: newValue,
+    },
+  ]);
+
+  const { data: cr, error: crErr } = await supabase
+    .from("change_requests")
+    .insert({
+      workspace_id: workspace.workspaceId,
+      short_id: shortId,
+      title: title || `Edit ${tok.name}`,
+      description: description || null,
+      migration_notes: migrationNotes || null,
+      status: "open",
+      breaking,
+      author_id: user.id,
+    } as never)
+    .select("id, short_id, title")
+    .single();
+  if (crErr || !cr) {
+    return { ok: false, error: crErr?.message ?? "Failed to create CR." };
+  }
+  const crRow = cr as { id: string; short_id: string; title: string };
+
+  await supabase.from("change_request_items").insert({
+    change_request_id: crRow.id,
+    workspace_id: workspace.workspaceId,
+    kind: "edit",
+    token_id: tok.id,
+    token_name: tok.name,
+    token_type: tok.type,
+    token_level: tok.level,
+    before_value: tok.current_value,
+    after_value: newValue,
+    position: 0,
+  } as never);
+
+  await supabase.rpc("record_audit", {
+    ws_id: workspace.workspaceId,
+    p_action: "change_request.submitted",
+    p_entity_type: "ChangeRequest",
+    p_entity_id: crRow.id,
+    p_after: {
+      kind: "edit",
+      token_name: tok.name,
+      before: tok.current_value,
+      after: newValue,
+    },
+  } as never);
+
+  await dispatchSubmittedNotification(
+    supabase,
+    workspace.workspaceId,
+    crRow.id,
+    crRow.short_id,
+    crRow.title,
+  );
+
+  revalidatePath("/change-requests");
+  revalidatePath(`/tokens/${tok.id}`);
+  return { ok: true, crId: crRow.id };
+}
+
+/**
+ * Amend the `after_value` of a single CR item while the CR is still open or
+ * has had changes requested. Author or reviewer+. Recomputes the CR's
+ * `breaking` flag so the migration-notes gate stays accurate.
+ */
+export async function updateChangeRequestItemValue(formData: FormData) {
+  const itemId = String(formData.get("itemId") ?? "");
+  const crId = String(formData.get("changeRequestId") ?? "");
+  const newValue = String(formData.get("value") ?? "").trim();
+  if (!itemId || !crId) throw new Error("Missing item or change request id.");
+  if (!newValue) throw new Error("Value cannot be empty.");
+
+  const { supabase, workspace } = await getCurrentWorkspaceOrRedirect();
+
+  const { data: itemRow } = await supabase
+    .from("change_request_items")
+    .select("id, change_request_id, kind, token_name, token_type, before_value")
+    .eq("id", itemId)
+    .eq("change_request_id", crId)
+    .eq("workspace_id", workspace.workspaceId)
+    .single();
+  if (!itemRow) throw new Error("Change request item not found.");
+  const item = itemRow as {
+    id: string;
+    change_request_id: string;
+    kind: string;
+    token_name: string;
+    token_type: string | null;
+    before_value: string | null;
+  };
+
+  if (item.kind !== "edit" && item.kind !== "add") {
+    throw new Error("Lifecycle items don't carry an editable value.");
+  }
+
+  const { data: crRow } = await supabase
+    .from("change_requests")
+    .select("id, status")
+    .eq("id", crId)
+    .eq("workspace_id", workspace.workspaceId)
+    .single();
+  if (!crRow) throw new Error("Change request not found.");
+  const cr = crRow as { id: string; status: string };
+  if (cr.status !== "open" && cr.status !== "changes_requested") {
+    throw new Error("This CR is no longer editable.");
+  }
+
+  // Validate the new value against current workspace state, with the proposed
+  // value overlaid so refs to the same token resolve to the new one.
+  const { data: tokenRows } = await supabase
+    .from("tokens")
+    .select("name, current_value")
+    .eq("workspace_id", workspace.workspaceId);
+  const tokensByName = new Map<string, string>();
+  for (const row of (tokenRows ?? []) as Array<{
+    name: string;
+    current_value: string | null;
+  }>) {
+    tokensByName.set(row.name, row.current_value ?? "");
+  }
+  tokensByName.set(item.token_name, newValue);
+
+  if (item.token_type) {
+    const schema = await loadSchemaConfig(supabase, workspace.workspaceId);
+    const v = validateToken({
+      name: item.token_name,
+      type: item.token_type,
+      value: newValue,
+      tokensByName,
+      schema,
+    });
+    const firstErr = v.issues.find((i) => i.severity === "error");
+    if (firstErr) {
+      throw new Error(
+        `Validation failed on ${item.token_name}: ${firstErr.message}`,
+      );
+    }
+  }
+
+  await supabase
+    .from("change_request_items")
+    .update({ after_value: newValue } as never)
+    .eq("id", item.id)
+    .eq("workspace_id", workspace.workspaceId);
+
+  // If this is an `add` kind item, the token's draft value should also follow
+  // so the contributor sees the same value across the token detail page and
+  // any other open CRs that reference it.
+  if (item.kind === "add") {
+    await supabase
+      .from("tokens")
+      .update({ current_value: newValue } as never)
+      .eq("name", item.token_name)
+      .eq("workspace_id", workspace.workspaceId)
+      .eq("status", "in_review");
+  }
+
+  // Recompute `breaking` for this CR.
+  const { data: items } = await supabase
+    .from("change_request_items")
+    .select("kind, before_value, after_value")
+    .eq("change_request_id", crId)
+    .eq("workspace_id", workspace.workspaceId);
+  const breaking = computeBreakingForItems(
+    ((items ?? []) as Array<{
+      kind: string;
+      before_value: string | null;
+      after_value: string | null;
+    }>),
+  );
+  await supabase
+    .from("change_requests")
+    .update({ breaking } as never)
+    .eq("id", crId)
+    .eq("workspace_id", workspace.workspaceId);
+
+  await supabase.rpc("record_audit", {
+    ws_id: workspace.workspaceId,
+    p_action: "change_request.item_updated",
+    p_entity_type: "ChangeRequestItem",
+    p_entity_id: item.id,
+    p_after: {
+      token_name: item.token_name,
+      after_value: newValue,
+    },
+  } as never);
+
+  revalidatePath(`/change-requests/${crId}`);
 }

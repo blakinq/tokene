@@ -24,6 +24,10 @@ import { InviteForm } from "./invite-form";
 import { RevokeInviteButton } from "./revoke-invite-button";
 import { SchemaForm } from "./schema-form";
 import { ApiKeysSection, type ApiKeyView } from "./api-keys-section";
+import {
+  NotificationEndpointsSection,
+  type NotificationEndpointView,
+} from "./notification-endpoints-section";
 
 type MemberRow = {
   role: "viewer" | "contributor" | "reviewer" | "admin";
@@ -78,6 +82,15 @@ export default async function SettingsPage() {
     apiKeys = (keysRaw ?? []) as unknown as ApiKeyView[];
   }
 
+  const { data: endpointsRaw } = await supabase
+    .from("notification_endpoints")
+    .select(
+      "id, kind, target, enabled, event_filter, created_at, last_delivered_at, last_error, last_error_at",
+    )
+    .eq("workspace_id", workspace.workspaceId)
+    .order("created_at", { ascending: false });
+  const endpoints = (endpointsRaw ?? []) as unknown as NotificationEndpointView[];
+
   return (
     <>
       <SiteHeader
@@ -113,6 +126,7 @@ export default async function SettingsPage() {
             <TabsTrigger value="general">General</TabsTrigger>
             <TabsTrigger value="members">Members</TabsTrigger>
             <TabsTrigger value="schema">Schema + approvals</TabsTrigger>
+            <TabsTrigger value="notifications">Notifications</TabsTrigger>
             {isAdmin ? <TabsTrigger value="api">API keys</TabsTrigger> : null}
           </TabsList>
 
@@ -266,6 +280,13 @@ export default async function SettingsPage() {
 
           <TabsContent value="schema" className="flex flex-col gap-6">
             <SchemaForm initial={schemaConfig} disabled={!isAdmin} />
+          </TabsContent>
+
+          <TabsContent value="notifications" className="flex flex-col gap-6">
+            <NotificationEndpointsSection
+              endpoints={endpoints}
+              isAdmin={isAdmin}
+            />
           </TabsContent>
 
           {isAdmin ? (

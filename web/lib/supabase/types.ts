@@ -438,6 +438,59 @@ export type Database = {
           },
         ]
       }
+      notification_endpoints: {
+        Row: {
+          created_at: string
+          created_by: string | null
+          enabled: boolean
+          event_filter: string[] | null
+          id: string
+          kind: Database["public"]["Enums"]["notification_endpoint_kind"]
+          last_delivered_at: string | null
+          last_error: string | null
+          last_error_at: string | null
+          secret: string | null
+          target: string
+          workspace_id: string
+        }
+        Insert: {
+          created_at?: string
+          created_by?: string | null
+          enabled?: boolean
+          event_filter?: string[] | null
+          id?: string
+          kind: Database["public"]["Enums"]["notification_endpoint_kind"]
+          last_delivered_at?: string | null
+          last_error?: string | null
+          last_error_at?: string | null
+          secret?: string | null
+          target: string
+          workspace_id: string
+        }
+        Update: {
+          created_at?: string
+          created_by?: string | null
+          enabled?: boolean
+          event_filter?: string[] | null
+          id?: string
+          kind?: Database["public"]["Enums"]["notification_endpoint_kind"]
+          last_delivered_at?: string | null
+          last_error?: string | null
+          last_error_at?: string | null
+          secret?: string | null
+          target?: string
+          workspace_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "notification_endpoints_workspace_id_fkey"
+            columns: ["workspace_id"]
+            isOneToOne: false
+            referencedRelation: "workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       profiles: {
         Row: {
           avatar_url: string | null
@@ -1095,6 +1148,14 @@ export type Database = {
         }
         Returns: undefined
       }
+      record_endpoint_delivery: {
+        Args: {
+          endpoint_id: string
+          err?: string | null
+          ok: boolean
+        }
+        Returns: undefined
+      }
       release_publish_lock: { Args: { ws_id: string }; Returns: undefined }
       show_limit: { Args: never; Returns: number }
       show_trgm: { Args: { "": string }; Returns: string[] }
@@ -1124,6 +1185,7 @@ export type Database = {
         | "published"
         | "rejected"
         | "closed"
+      notification_endpoint_kind: "webhook" | "email"
       notification_kind:
         | "change_request.submitted"
         | "change_request.approved"

@@ -40,18 +40,29 @@ function splitLength(raw: string, units: string[]) {
 type Props = {
   type: string;
   invalid?: boolean;
+  /**
+   * Optional initial value. When provided, the editor pre-fills its state and
+   * auto-detects whether the value is a `{ref}`. The reset-on-type-change
+   * behaviour still applies so swapping the parent's type clears stale state.
+   */
+  initialValue?: string;
+  /** Lock the type so the reset-on-type effect doesn't fire after mount. */
+  lockType?: boolean;
 };
 
-export function ValueEditor({ type, invalid }: Props) {
-  const [useReference, setUseReference] = useState(false);
-  const [value, setValue] = useState("");
+export function ValueEditor({ type, invalid, initialValue, lockType }: Props) {
+  const startsAsRef = !!initialValue && /^\{.+\}$/.test(initialValue);
+  const [useReference, setUseReference] = useState(startsAsRef);
+  const [value, setValue] = useState(initialValue ?? "");
 
   // Reset editor whenever the token type changes so stale composite state
-  // (e.g. a "px" unit) doesn't bleed into a fresh color value.
+  // (e.g. a "px" unit) doesn't bleed into a fresh color value. When the type
+  // is locked (edit flow), suppress this so the initial value sticks.
   useEffect(() => {
+    if (lockType) return;
     setValue("");
     setUseReference(false);
-  }, [type]);
+  }, [type, lockType]);
 
   const editor = useMemo(() => {
     if (useReference) {

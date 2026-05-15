@@ -41,6 +41,8 @@ import type {
   ChangeRequestItemKind,
 } from "@/lib/supabase/types";
 import { CommentForm } from "./comment-form";
+import { ItemValueDiff } from "./item-value-diff";
+import { AmendItemForm } from "./amend-item-form";
 
 type CRRow = {
   id: string;
@@ -58,6 +60,7 @@ type CRRow = {
     id: string;
     kind: ChangeRequestItemKind;
     token_name: string;
+    token_type: string | null;
     before_value: string | null;
     after_value: string | null;
     note: string | null;
@@ -89,7 +92,7 @@ export default async function ChangeRequestDetailPage({
     .from("change_requests")
     .select(
       "id, short_id, title, description, status, breaking, stale, stale_reason, migration_notes, updated_at, author_id, " +
-        "items:change_request_items(id, kind, token_name, before_value, after_value, note), " +
+        "items:change_request_items(id, kind, token_name, token_type, before_value, after_value, note), " +
         "reviews(id, decision, created_at, reviewer_id)",
     )
     .eq("id", id)
@@ -235,51 +238,61 @@ export default async function ChangeRequestDetailPage({
                   </p>
                 ) : (
                   <ol className="flex flex-col">
-                    {cr.items.map((item) => (
-                      <li
-                        key={item.id}
-                        className="border-border/60 flex flex-col gap-2 border-b py-3 last:border-b-0"
-                      >
-                        <div className="flex items-center gap-2">
-                          <Badge
-                            variant="outline"
-                            className="font-mono font-normal capitalize"
-                          >
-                            {item.kind}
-                          </Badge>
-                          <span className="font-mono text-sm">
-                            {item.token_name}
-                          </span>
-                        </div>
-                        <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
-                          <div className="bg-muted/40 rounded-md p-3">
-                            <div className="text-muted-foreground mb-1 text-xs">
-                              Before
-                            </div>
-                            <div className="font-mono text-sm">
-                              {item.before_value ?? (
-                                <span className="text-muted-foreground italic">
-                                  (new)
-                                </span>
-                              )}
-                            </div>
+                    {cr.items.map((item) => {
+                      const amendable =
+                        (item.kind === "edit" || item.kind === "add") &&
+                        (cr.status === "open" ||
+                          cr.status === "changes_requested");
+                      return (
+                        <li
+                          key={item.id}
+                          className="border-border/60 flex flex-col gap-2 border-b py-3 last:border-b-0"
+                        >
+                          <div className="flex items-center gap-2">
+                            <Badge
+                              variant="outline"
+                              className="font-mono font-normal capitalize"
+                            >
+                              {item.kind}
+                            </Badge>
+                            <Link
+                              href={`/tokens?q=${encodeURIComponent(item.token_name)}`}
+                              className="font-mono text-sm hover:underline"
+                            >
+                              {item.token_name}
+                            </Link>
+                            {item.token_type ? (
+                              <Badge
+                                variant="outline"
+                                className="font-normal capitalize"
+                              >
+                                {item.token_type.replace("_", " ")}
+                              </Badge>
+                            ) : null}
                           </div>
-                          <div className="bg-muted/40 rounded-md p-3">
-                            <div className="text-muted-foreground mb-1 text-xs">
-                              After
-                            </div>
-                            <div className="font-mono text-sm">
-                              {item.after_value ?? "—"}
-                            </div>
-                          </div>
-                        </div>
-                        {item.note ? (
-                          <p className="text-muted-foreground text-xs">
-                            {item.note}
-                          </p>
-                        ) : null}
-                      </li>
-                    ))}
+                          {item.kind === "edit" || item.kind === "add" ? (
+                            <ItemValueDiff
+                              type={item.token_type}
+                              before={item.before_value}
+                              after={item.after_value}
+                            />
+                          ) : null}
+                          {item.note ? (
+                            <p className="text-muted-foreground text-xs">
+                              {item.note}
+                            </p>
+                          ) : null}
+                          {amendable && item.token_type ? (
+                            <AmendItemForm
+                              itemId={item.id}
+                              changeRequestId={cr.id}
+                              tokenType={item.token_type}
+                              currentAfter={item.after_value ?? ""}
+                            />
+                          ) : null}
+                        </li>
+                      );
+                    })}
                   </ol>
                 )}
               </CardContent>

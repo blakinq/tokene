@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 
 import { extractReferences, resolveReferences } from "@/lib/core/references";
 import { validateToken } from "@/lib/core/validation";
+import { dispatchExternalNotifications } from "@/lib/notifications/dispatch";
 import { getCurrentWorkspaceOrRedirect } from "@/lib/supabase/queries";
 import { loadSchemaConfig } from "@/lib/supabase/schema-config";
 import type { createSupabaseServerClient } from "@/lib/supabase/server";
@@ -393,6 +394,14 @@ async function publishCore(
       p_exclude_actor: false,
       p_role_at_least: "viewer",
     } as never);
+    await dispatchExternalNotifications(workspaceId, {
+      kind: "release.published",
+      title: `Release v${opts.version} published`,
+      body: opts.summary ?? null,
+      link: `/releases/${releaseId}`,
+      entityType: "Release",
+      entityId: releaseId,
+    });
 
     // §10.6: every still-open CR may now reference stale state.
     await revalidateOpenCRs(supabase, workspaceId, opts.crIds);

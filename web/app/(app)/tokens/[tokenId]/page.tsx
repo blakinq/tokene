@@ -265,14 +265,23 @@ export default async function TokenDetailPage({
                   </Button>
                 </form>
               ) : null}
-              <form action={proposeChangeForToken}>
-                <input type="hidden" name="tokenId" value={t.id} />
-                <input type="hidden" name="tokenName" value={t.name} />
-                <Button type="submit" size="sm">
-                  <Pencil data-icon="inline-start" />
-                  Propose change
+              {t.status === "draft" ? (
+                <form action={proposeChangeForToken}>
+                  <input type="hidden" name="tokenId" value={t.id} />
+                  <input type="hidden" name="tokenName" value={t.name} />
+                  <Button type="submit" size="sm">
+                    <Pencil data-icon="inline-start" />
+                    Submit for review
+                  </Button>
+                </form>
+              ) : t.status === "published" || t.status === "deprecated" ? (
+                <Button size="sm" asChild>
+                  <Link href={`/tokens/${t.id}/edit`}>
+                    <Pencil data-icon="inline-start" />
+                    Propose edit
+                  </Link>
                 </Button>
-              </form>
+              ) : null}
             </div>
           </div>
         </div>
