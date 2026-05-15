@@ -31,11 +31,16 @@ import { getCurrentWorkspaceOrRedirect } from "@/lib/supabase/queries";
 import { Textarea } from "@/components/ui/textarea";
 import {
   approveChangeRequest,
+  rejectChangeRequest,
   requestChangesOnCR,
   updateChangeRequestMeta,
 } from "@/app/(app)/actions/change-requests";
 import { deleteCommentFromCR } from "@/app/(app)/actions/comments";
 import { publishReleaseFromCR } from "@/app/(app)/actions/releases";
+import {
+  assignReviewerAction,
+  unassignReviewerAction,
+} from "@/app/(app)/actions/reviewers";
 import type {
   ChangeRequestStatus,
   ChangeRequestItemKind,
@@ -86,7 +91,9 @@ export default async function ChangeRequestDetailPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  const { supabase, workspace } = await getCurrentWorkspaceOrRedirect();
+  const { supabase, workspace, user } = await getCurrentWorkspaceOrRedirect();
+  const canManageReviewers =
+    workspace.role === "reviewer" || workspace.role === "admin";
 
   const { data, error } = await supabase
     .from("change_requests")
@@ -113,11 +120,42 @@ export default async function ChangeRequestDetailPage({
 
   const comments = (commentsRaw ?? []) as unknown as CommentRow[];
 
+  const { data: assignmentsRaw } = await supabase
+    .from("reviewer_assignments")
+    .select("id, reviewer_id, created_at")
+    .eq("change_request_id", cr.id)
+    .eq("workspace_id", workspace.workspaceId)
+    .order("created_at", { ascending: true });
+  const assignments = (assignmentsRaw ?? []) as Array<{
+    id: string;
+    reviewer_id: string;
+    created_at: string;
+  }>;
+
+  // Reviewer-or-admin members of this workspace eligible to be assigned.
+  const { data: candidatesRaw } = await supabase
+    .from("workspace_members")
+    .select("user_id, role")
+    .eq("workspace_id", workspace.workspaceId)
+    .in("role", ["reviewer", "admin"]);
+  const eligibleReviewers = (candidatesRaw ?? []) as Array<{
+    user_id: string;
+    role: string;
+  }>;
+  const assignedSet = new Set(assignments.map((a) => a.reviewer_id));
+  const assignableCandidates = eligibleReviewers.filter(
+    (c) => !assignedSet.has(c.user_id),
+  );
+
   const profilesById = await loadProfiles(supabase, [
     cr.author_id,
     ...cr.reviews.map((r) => r.reviewer_id),
     ...comments.map((c) => c.author_id),
+    ...assignments.map((a) => a.reviewer_id),
+    ...eligibleReviewers.map((e) => e.user_id),
   ]);
+  // Tell typescript `user` is referenced (used when canManageReviewers).
+  void user;
 
   const authorName = formatActorName(
     cr.author_id ? profilesById.get(cr.author_id) : undefined,
@@ -276,6 +314,16 @@ export default async function ChangeRequestDetailPage({
                               before={item.before_value}
                               after={item.after_value}
                             />
+                          ) : item.kind === "rename" ? (
+                            <p className="font-mono text-xs">
+                              <span className="text-muted-foreground">
+                                {item.before_value}
+                              </span>{" "}
+                              →{" "}
+                              <span className="text-foreground">
+                                {item.after_value}
+                              </span>
+                            </p>
                           ) : null}
                           {item.note ? (
                             <p className="text-muted-foreground text-xs">
@@ -468,6 +516,100 @@ export default async function ChangeRequestDetailPage({
             <Card>
               <CardHeader>
                 <CardTitle className="text-base font-medium">
+                  Assigned reviewers
+                  <span className="text-muted-foreground ml-2 font-mono text-sm">
+                    {assignments.length}
+                  </span>
+                </CardTitle>
+                <CardDescription>
+                  Reviewers explicitly asked to look at this change.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <ul className="flex flex-col">
+                  {assignments.length === 0 ? (
+                    <li className="text-muted-foreground py-2 text-sm">
+                      None yet.
+                    </li>
+                  ) : null}
+                  {assignments.map((a) => {
+                    const profile = profilesById.get(a.reviewer_id);
+                    const name = formatActorName(profile);
+                    return (
+                      <li
+                        key={a.id}
+                        className="border-border/60 flex items-center gap-3 border-b py-2 last:border-b-0"
+                      >
+                        <Avatar className="size-6">
+                          <AvatarFallback className="text-[10px]">
+                            {name
+                              .split(" ")
+                              .map((n) => n[0])
+                              .slice(0, 2)
+                              .join("")
+                              .toUpperCase() || "·"}
+                          </AvatarFallback>
+                        </Avatar>
+                        <span className="text-sm">{name}</span>
+                        {canManageReviewers ? (
+                          <form
+                            action={unassignReviewerAction}
+                            className="ml-auto"
+                          >
+                            <input
+                              type="hidden"
+                              name="changeRequestId"
+                              value={cr.id}
+                            />
+                            <input
+                              type="hidden"
+                              name="reviewerId"
+                              value={a.reviewer_id}
+                            />
+                            <button
+                              type="submit"
+                              className="text-muted-foreground hover:text-destructive text-xs"
+                            >
+                              Remove
+                            </button>
+                          </form>
+                        ) : null}
+                      </li>
+                    );
+                  })}
+                </ul>
+                {canManageReviewers && assignableCandidates.length > 0 ? (
+                  <form
+                    action={assignReviewerAction}
+                    className="border-border/60 mt-3 flex items-center gap-2 border-t pt-3"
+                  >
+                    <input
+                      type="hidden"
+                      name="changeRequestId"
+                      value={cr.id}
+                    />
+                    <select
+                      name="reviewerId"
+                      defaultValue={assignableCandidates[0]?.user_id ?? ""}
+                      className="bg-background h-8 flex-1 rounded-md border px-2 text-xs"
+                    >
+                      {assignableCandidates.map((c) => (
+                        <option key={c.user_id} value={c.user_id}>
+                          {formatActorName(profilesById.get(c.user_id))}
+                        </option>
+                      ))}
+                    </select>
+                    <Button type="submit" size="sm" variant="outline">
+                      Assign
+                    </Button>
+                  </form>
+                ) : null}
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base font-medium">
                   Reviews
                   <span className="text-muted-foreground ml-2 font-mono text-sm">
                     {cr.reviews.length}
@@ -538,6 +680,17 @@ function CRActions({
   if (status === "open" || status === "changes_requested") {
     return (
       <div className="flex items-center gap-2">
+        <form action={rejectChangeRequest}>
+          <input type="hidden" name="id" value={crId} />
+          <Button
+            type="submit"
+            variant="ghost"
+            size="sm"
+            className="text-muted-foreground hover:text-destructive"
+          >
+            Reject
+          </Button>
+        </form>
         <form action={requestChangesOnCR}>
           <input type="hidden" name="id" value={crId} />
           <Button type="submit" variant="outline" size="sm">

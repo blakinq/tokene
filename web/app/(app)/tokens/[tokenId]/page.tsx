@@ -39,6 +39,7 @@ import { loadProfiles, formatActorName } from "@/lib/supabase/profiles";
 import { getCurrentWorkspaceOrRedirect } from "@/lib/supabase/queries";
 import { createLifecycleCR } from "@/app/(app)/actions/change-requests";
 import { proposeChangeForToken } from "./propose-action";
+import { RenameTokenButton } from "./rename-button";
 
 type TokenLike = {
   id: string;
@@ -264,6 +265,9 @@ export default async function TokenDetailPage({
                     Restore
                   </Button>
                 </form>
+              ) : null}
+              {t.status === "published" || t.status === "deprecated" ? (
+                <RenameTokenButton tokenId={t.id} currentName={t.name} />
               ) : null}
               {t.status === "draft" ? (
                 <form action={proposeChangeForToken}>

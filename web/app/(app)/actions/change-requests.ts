@@ -621,6 +621,205 @@ export async function requestChangesOnCR(formData: FormData) {
 }
 
 /**
+ * §11.2: reviewer rejects a CR. Records a `reject` review row, transitions
+ * the CR to `rejected`, reverts any in_review draft tokens to draft, and
+ * notifies the author.
+ */
+export async function rejectChangeRequest(formData: FormData) {
+  const id = String(formData.get("id"));
+  const comment = String(formData.get("comment") ?? "").trim() || null;
+  const { supabase, workspace, user } = await getCurrentWorkspaceOrRedirect();
+
+  // Only reviewer+ should be able to reject. RLS on `reviews` already enforces
+  // this, but we add an explicit guard so we surface a clear error.
+  if (
+    workspace.role !== "reviewer" &&
+    workspace.role !== "admin"
+  ) {
+    throw new Error("Only reviewers can reject a change request.");
+  }
+
+  const { data: crRow } = await supabase
+    .from("change_requests")
+    .select("short_id, title, author_id, status")
+    .eq("id", id)
+    .eq("workspace_id", workspace.workspaceId)
+    .single();
+  if (!crRow) throw new Error("Change request not found.");
+  const cr = crRow as {
+    short_id: string;
+    title: string;
+    author_id: string | null;
+    status: string;
+  };
+  if (cr.status === "published" || cr.status === "rejected") {
+    throw new Error(`Can't reject a ${cr.status} change request.`);
+  }
+
+  await supabase.from("reviews").insert({
+    change_request_id: id,
+    workspace_id: workspace.workspaceId,
+    reviewer_id: user.id,
+    decision: "reject",
+    comment,
+  } as never);
+
+  await supabase
+    .from("change_requests")
+    .update({ status: "rejected" } as never)
+    .eq("id", id)
+    .eq("workspace_id", workspace.workspaceId);
+
+  await applyTokenStatusForCR(
+    supabase,
+    workspace.workspaceId,
+    id,
+    "draft",
+    ["in_review", "approved"],
+  );
+
+  await supabase.rpc("record_audit", {
+    ws_id: workspace.workspaceId,
+    p_action: "change_request.rejected",
+    p_entity_type: "ChangeRequest",
+    p_entity_id: id,
+    p_after: { comment },
+  } as never);
+
+  if (cr.author_id && cr.author_id !== user.id) {
+    await supabase.rpc("notify_user", {
+      ws_id: workspace.workspaceId,
+      p_recipient: cr.author_id,
+      p_kind: "change_request.rejected",
+      p_entity_type: "ChangeRequest",
+      p_entity_id: id,
+      p_title: `${cr.short_id} rejected`,
+      p_body: comment ?? cr.title,
+      p_link: `/change-requests/${id}`,
+    } as never);
+  }
+  await dispatchExternalNotifications(workspace.workspaceId, {
+    kind: "change_request.rejected",
+    title: `${cr.short_id} rejected`,
+    body: comment ?? cr.title,
+    link: `/change-requests/${id}`,
+    entityType: "ChangeRequest",
+    entityId: id,
+  });
+
+  revalidatePath(`/change-requests/${id}`);
+  revalidatePath("/change-requests");
+}
+
+/**
+ * §10.4 + §7.5: rename a published token via a CR. The new name must be
+ * unique within the workspace and pass the schema's naming pattern.
+ * `before_value` carries the current name; `after_value` carries the new
+ * one. publishCore handles the actual rename when the CR ships.
+ */
+export async function createRenameCR(formData: FormData) {
+  const tokenId = String(formData.get("tokenId") ?? "").trim();
+  const newName = String(formData.get("newName") ?? "").trim();
+  if (!tokenId || !newName) {
+    throw new Error("Missing token id or new name.");
+  }
+
+  const { supabase, workspace, user } = await getCurrentWorkspaceOrRedirect();
+
+  const schema = await loadSchemaConfig(supabase, workspace.workspaceId);
+  let nameRegex: RegExp;
+  try {
+    nameRegex = new RegExp(schema.namingPattern);
+  } catch {
+    nameRegex = /^[a-z][a-z0-9]*(\.[a-z0-9]+)+$/;
+  }
+  if (!nameRegex.test(newName)) {
+    throw new Error(`New name doesn't match ${schema.namingPattern}.`);
+  }
+
+  const { data: tokenRow } = await supabase
+    .from("tokens")
+    .select("id, name, type, level, current_value, status")
+    .eq("id", tokenId)
+    .eq("workspace_id", workspace.workspaceId)
+    .single();
+  if (!tokenRow) throw new Error("Token not found.");
+  const tok = tokenRow as {
+    id: string;
+    name: string;
+    type: string;
+    level: string;
+    current_value: string | null;
+    status: string;
+  };
+  if (tok.name === newName) {
+    throw new Error("New name matches the current name.");
+  }
+
+  const { data: dupe } = await supabase
+    .from("tokens")
+    .select("id")
+    .eq("workspace_id", workspace.workspaceId)
+    .eq("name", newName)
+    .maybeSingle();
+  if (dupe) throw new Error(`A token already uses the name ${newName}.`);
+
+  const { count } = await supabase
+    .from("change_requests")
+    .select("*", { count: "exact", head: true })
+    .eq("workspace_id", workspace.workspaceId);
+  const shortId = `CR-${String((count ?? 0) + 1).padStart(3, "0")}`;
+
+  const { data: cr, error: crErr } = await supabase
+    .from("change_requests")
+    .insert({
+      workspace_id: workspace.workspaceId,
+      short_id: shortId,
+      title: `Rename ${tok.name} → ${newName}`,
+      status: "open",
+      breaking: true,
+      author_id: user.id,
+    } as never)
+    .select("id, short_id, title")
+    .single();
+  if (crErr || !cr) throw new Error(crErr?.message ?? "Failed to create CR.");
+  const crRow = cr as { id: string; short_id: string; title: string };
+
+  await supabase.from("change_request_items").insert({
+    change_request_id: crRow.id,
+    workspace_id: workspace.workspaceId,
+    kind: "rename",
+    token_id: tok.id,
+    token_name: tok.name,
+    token_type: tok.type,
+    token_level: tok.level,
+    before_value: tok.name,
+    after_value: newName,
+    position: 0,
+  } as never);
+
+  await supabase.rpc("record_audit", {
+    ws_id: workspace.workspaceId,
+    p_action: "change_request.submitted",
+    p_entity_type: "ChangeRequest",
+    p_entity_id: crRow.id,
+    p_after: { kind: "rename", from: tok.name, to: newName },
+  } as never);
+
+  await dispatchSubmittedNotification(
+    supabase,
+    workspace.workspaceId,
+    crRow.id,
+    crRow.short_id,
+    crRow.title,
+  );
+
+  revalidatePath("/change-requests");
+  revalidatePath(`/tokens/${tok.id}`);
+  redirect(`/change-requests/${crRow.id}`);
+}
+
+/**
  * Update mutable CR metadata (migration notes today). Author or reviewer+.
  */
 export async function updateChangeRequestMeta(formData: FormData) {

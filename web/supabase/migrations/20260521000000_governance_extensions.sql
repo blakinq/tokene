@@ -3,6 +3,8 @@
 --   reviewer assignments (§11.2)
 --   token.archived + import.completed + export.completed/failed notifications
 --   import_jobs table backing the preview-before-CR flow (§14.3)
+--   workspace-mate profile reads so display names show up across the app
+--     instead of falling back to "Unknown"
 
 -- -----------------------------------------------------------------------------
 -- review_decision: add 'reject'

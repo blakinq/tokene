@@ -249,6 +249,24 @@ async function publishCore(
           } as never)
           .eq("id", it.token_id)
           .eq("workspace_id", workspaceId);
+        await supabase.rpc("record_audit", {
+          ws_id: workspaceId,
+          p_action: "token.deprecated",
+          p_entity_type: "Token",
+          p_entity_id: it.token_id,
+          p_after: { name: it.token_name },
+        } as never);
+        await supabase.rpc("notify_workspace", {
+          ws_id: workspaceId,
+          p_kind: "token.deprecated",
+          p_entity_type: "Token",
+          p_entity_id: it.token_id,
+          p_title: `${it.token_name} was deprecated`,
+          p_body: null,
+          p_link: `/tokens/${it.token_id}`,
+          p_exclude_actor: false,
+          p_role_at_least: "viewer",
+        } as never);
         continue;
       }
       if (it.kind === "archive") {
@@ -260,6 +278,24 @@ async function publishCore(
           } as never)
           .eq("id", it.token_id)
           .eq("workspace_id", workspaceId);
+        await supabase.rpc("record_audit", {
+          ws_id: workspaceId,
+          p_action: "token.archived",
+          p_entity_type: "Token",
+          p_entity_id: it.token_id,
+          p_after: { name: it.token_name },
+        } as never);
+        await supabase.rpc("notify_workspace", {
+          ws_id: workspaceId,
+          p_kind: "token.archived",
+          p_entity_type: "Token",
+          p_entity_id: it.token_id,
+          p_title: `${it.token_name} was archived`,
+          p_body: null,
+          p_link: `/tokens/${it.token_id}`,
+          p_exclude_actor: false,
+          p_role_at_least: "viewer",
+        } as never);
         continue;
       }
       if (it.kind === "restore") {
@@ -272,6 +308,35 @@ async function publishCore(
           } as never)
           .eq("id", it.token_id)
           .eq("workspace_id", workspaceId);
+        continue;
+      }
+
+      if (it.kind === "rename") {
+        const next = it.after_value;
+        if (!next) continue;
+        await supabase
+          .from("tokens")
+          .update({ name: next, updated_by: userId } as never)
+          .eq("id", it.token_id)
+          .eq("workspace_id", workspaceId);
+        // Keep the in-memory map in sync so downstream items resolve refs to
+        // the renamed token correctly within the same publish.
+        const prev = tokensByName.get(it.token_name);
+        if (prev !== undefined) {
+          tokensByName.set(next, prev);
+          tokensByName.delete(it.token_name);
+        }
+        continue;
+      }
+
+      if (it.kind === "delete_draft") {
+        // Tokens still in draft when the CR ships are removed entirely.
+        await supabase
+          .from("tokens")
+          .delete()
+          .eq("id", it.token_id)
+          .eq("workspace_id", workspaceId)
+          .eq("status", "draft");
         continue;
       }
 
@@ -374,6 +439,13 @@ async function publishCore(
       .in("id", opts.crIds)
       .eq("workspace_id", workspaceId);
 
+    await supabase.rpc("record_audit", {
+      ws_id: workspaceId,
+      p_action: "release.created",
+      p_entity_type: "Release",
+      p_entity_id: releaseId,
+      p_after: { version: opts.version, change_request_ids: opts.crIds },
+    } as never);
     await supabase.rpc("record_audit", {
       ws_id: workspaceId,
       p_action: "release.published",
