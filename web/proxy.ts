@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 
 const PUBLIC_PATHS = ["/login", "/signup", "/auth/callback", "/invite"];
+const PUBLIC_EXACT = new Set(["/"]);
 
 export function proxy(request: NextRequest) {
   // Skip when Supabase env isn't configured (lets the app boot for
@@ -13,9 +14,11 @@ export function proxy(request: NextRequest) {
   }
 
   const { pathname } = request.nextUrl;
-  const isPublic = PUBLIC_PATHS.some(
-    (p) => pathname === p || pathname.startsWith(`${p}/`),
-  );
+  const isPublic =
+    PUBLIC_EXACT.has(pathname) ||
+    PUBLIC_PATHS.some(
+      (p) => pathname === p || pathname.startsWith(`${p}/`),
+    );
 
   // Optimistic auth check via cookie presence; RSCs call `supabase.auth.getUser()`
   // for real validation and any needed token refresh. Importing `@supabase/ssr`
