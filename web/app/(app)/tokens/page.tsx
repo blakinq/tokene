@@ -1,7 +1,5 @@
-import { Search } from "lucide-react";
-
-import { Input } from "@/components/ui/input";
 import { SiteHeader } from "@/components/site-header";
+import { TokensFilterBar } from "@/components/tokens-filter-bar";
 import { TokensTable, type TokenRow } from "@/components/tokens-table";
 import { getCurrentWorkspaceOrRedirect } from "@/lib/supabase/queries";
 import type { TokenLevel, TokenStatus, TokenType } from "@/lib/supabase/types";
@@ -137,71 +135,7 @@ export default async function TokensPage({
             <span className="text-muted-foreground text-xs font-medium tracking-wider uppercase">
               Library
             </span>
-            <div className="flex flex-wrap items-end justify-between gap-4">
-              <h1 className="text-3xl font-semibold tracking-tight">Tokens</h1>
-              <form
-                method="GET"
-                className="flex flex-wrap items-center gap-2"
-              >
-                <div className="relative flex items-center">
-                  <Search className="text-muted-foreground absolute left-2.5 size-3.5" />
-                  <Input
-                    name="q"
-                    placeholder="Search by name"
-                    defaultValue={search}
-                    className="h-9 w-56 pl-8 font-mono text-xs"
-                  />
-                </div>
-                <select
-                  name="type"
-                  defaultValue={typeFilter ?? ""}
-                  className="bg-background h-9 rounded-md border px-2 text-xs"
-                >
-                  <option value="">Any type</option>
-                  {TYPE_VALUES.map((t) => (
-                    <option key={t} value={t}>
-                      {t.replace("_", " ")}
-                    </option>
-                  ))}
-                </select>
-                <select
-                  name="level"
-                  defaultValue={levelFilter ?? ""}
-                  className="bg-background h-9 rounded-md border px-2 text-xs"
-                >
-                  <option value="">Any level</option>
-                  {LEVEL_VALUES.map((l) => (
-                    <option key={l} value={l}>
-                      {l}
-                    </option>
-                  ))}
-                </select>
-                <select
-                  name="status"
-                  defaultValue={statusFilter ?? ""}
-                  className="bg-background h-9 rounded-md border px-2 text-xs"
-                >
-                  <option value="">Any status</option>
-                  {STATUS_VALUES.map((s) => (
-                    <option key={s} value={s}>
-                      {s.replace("_", " ")}
-                    </option>
-                  ))}
-                </select>
-                <Input
-                  name="tag"
-                  placeholder="tag"
-                  defaultValue={tagFilter ?? ""}
-                  className="h-9 w-24 font-mono text-xs"
-                />
-                <button
-                  type="submit"
-                  className="bg-primary text-primary-foreground hover:bg-primary/90 h-9 rounded-md px-3 text-xs font-medium"
-                >
-                  Apply
-                </button>
-              </form>
-            </div>
+            <h1 className="text-3xl font-semibold tracking-tight">Tokens</h1>
             <p className="text-muted-foreground max-w-2xl text-sm">
               The source of truth for design decisions. Every change flows
               through review and release before reaching production exports.
@@ -217,12 +151,21 @@ export default async function TokensPage({
           </dl>
         </div>
 
-        <TokensTable
-          tokens={tokens}
-          totalCount={total ?? 0}
-          nextCursor={nextCursor}
-          currentCursor={cursor ?? null}
-        />
+        <div className="flex flex-col gap-4">
+          <TokensFilterBar
+            initialQuery={search}
+            initialType={typeFilter}
+            initialLevel={levelFilter}
+            initialStatus={statusFilter}
+            initialTag={tagFilter}
+          />
+          <TokensTable
+            tokens={tokens}
+            totalCount={total ?? 0}
+            nextCursor={nextCursor}
+            currentCursor={cursor ?? null}
+          />
+        </div>
       </div>
     </>
   );
