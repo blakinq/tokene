@@ -404,15 +404,18 @@ export async function approveChangeRequest(formData: FormData) {
 
   const { data: tokenRows } = await supabase
     .from("tokens")
-    .select("name, current_value")
+    .select("name, current_value, description")
     .eq("workspace_id", workspace.workspaceId);
 
   const tokensByName = new Map<string, string>();
+  const descriptionsByName = new Map<string, string | null>();
   for (const row of (tokenRows ?? []) as Array<{
     name: string;
     current_value: string | null;
+    description: string | null;
   }>) {
     tokensByName.set(row.name, row.current_value ?? "");
+    descriptionsByName.set(row.name, row.description);
   }
   for (const it of items) {
     if (it.after_value) tokensByName.set(it.token_name, it.after_value);
@@ -424,6 +427,7 @@ export async function approveChangeRequest(formData: FormData) {
       name: it.token_name,
       type: it.token_type,
       value: it.after_value,
+      description: descriptionsByName.get(it.token_name) ?? undefined,
       tokensByName,
       schema,
     });
@@ -955,14 +959,17 @@ export async function updateChangeRequestItemValue(formData: FormData) {
   // value overlaid so refs to the same token resolve to the new one.
   const { data: tokenRows } = await supabase
     .from("tokens")
-    .select("name, current_value")
+    .select("name, current_value, description")
     .eq("workspace_id", workspace.workspaceId);
   const tokensByName = new Map<string, string>();
+  const descriptionsByName = new Map<string, string | null>();
   for (const row of (tokenRows ?? []) as Array<{
     name: string;
     current_value: string | null;
+    description: string | null;
   }>) {
     tokensByName.set(row.name, row.current_value ?? "");
+    descriptionsByName.set(row.name, row.description);
   }
   tokensByName.set(item.token_name, newValue);
 
@@ -972,6 +979,7 @@ export async function updateChangeRequestItemValue(formData: FormData) {
       name: item.token_name,
       type: item.token_type,
       value: newValue,
+      description: descriptionsByName.get(item.token_name) ?? undefined,
       tokensByName,
       schema,
     });

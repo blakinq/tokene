@@ -77,15 +77,18 @@ async function revalidateOpenCRs(
 
   const { data: tokenRows } = await supabase
     .from("tokens")
-    .select("name, current_value")
+    .select("name, current_value, description")
     .eq("workspace_id", workspaceId);
 
   const baseline = new Map<string, string>();
+  const descriptionsByName = new Map<string, string | null>();
   for (const row of (tokenRows ?? []) as Array<{
     name: string;
     current_value: string | null;
+    description: string | null;
   }>) {
     baseline.set(row.name, row.current_value ?? "");
+    descriptionsByName.set(row.name, row.description);
   }
 
   for (const cr of openCRs) {
@@ -114,6 +117,7 @@ async function revalidateOpenCRs(
         name: it.token_name,
         type: it.token_type,
         value: it.after_value,
+        description: descriptionsByName.get(it.token_name) ?? undefined,
         tokensByName,
         schema,
       });
