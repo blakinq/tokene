@@ -707,6 +707,75 @@ export type Database = {
           },
         ]
       }
+      reviewer_assignments: {
+        Row: {
+          assigned_by: string | null
+          change_request_id: string
+          created_at: string
+          id: string
+          reviewer_id: string
+          workspace_id: string
+        }
+        Insert: {
+          assigned_by?: string | null
+          change_request_id: string
+          created_at?: string
+          id?: string
+          reviewer_id: string
+          workspace_id: string
+        }
+        Update: {
+          assigned_by?: string | null
+          change_request_id?: string
+          created_at?: string
+          id?: string
+          reviewer_id?: string
+          workspace_id?: string
+        }
+        Relationships: []
+      }
+      import_jobs: {
+        Row: {
+          change_request_id: string | null
+          committed_at: string | null
+          conflicts: Json
+          created_at: string
+          created_by: string | null
+          id: string
+          parsed_tokens: Json
+          raw_payload: string
+          source_filename: string | null
+          status: Database["public"]["Enums"]["import_job_status"]
+          workspace_id: string
+        }
+        Insert: {
+          change_request_id?: string | null
+          committed_at?: string | null
+          conflicts?: Json
+          created_at?: string
+          created_by?: string | null
+          id?: string
+          parsed_tokens?: Json
+          raw_payload: string
+          source_filename?: string | null
+          status?: Database["public"]["Enums"]["import_job_status"]
+          workspace_id: string
+        }
+        Update: {
+          change_request_id?: string | null
+          committed_at?: string | null
+          conflicts?: Json
+          created_at?: string
+          created_by?: string | null
+          id?: string
+          parsed_tokens?: Json
+          raw_payload?: string
+          source_filename?: string | null
+          status?: Database["public"]["Enums"]["import_job_status"]
+          workspace_id?: string
+        }
+        Relationships: []
+      }
       reviews: {
         Row: {
           change_request_id: string
@@ -1190,12 +1259,18 @@ export type Database = {
         | "change_request.submitted"
         | "change_request.approved"
         | "change_request.changes_requested"
+        | "change_request.rejected"
         | "release.published"
         | "token.deprecated"
+        | "token.archived"
         | "comment.mention"
         | "reviewer.assigned"
+        | "import.completed"
+        | "export.completed"
+        | "export.failed"
       release_status: "draft" | "published" | "archived"
-      review_decision: "approve" | "request_changes" | "comment"
+      review_decision: "approve" | "request_changes" | "comment" | "reject"
+      import_job_status: "parsed" | "committed" | "discarded"
       token_level: "primitive" | "semantic" | "component"
       token_status:
         | "draft"
@@ -1352,6 +1427,7 @@ export type ChangeRequestItemKind = Enums<"change_request_item_kind">;
 export type ReviewDecision = Enums<"review_decision">;
 export type ReleaseStatus = Enums<"release_status">;
 export type NotificationKind = Enums<"notification_kind">;
+export type ImportJobStatus = Enums<"import_job_status">;
 
 // `api_keys.scopes` is a free-form text[]; we constrain it in app code.
 export type ApiKeyScope =
@@ -1388,13 +1464,19 @@ export const Constants = {
         "change_request.submitted",
         "change_request.approved",
         "change_request.changes_requested",
+        "change_request.rejected",
         "release.published",
         "token.deprecated",
+        "token.archived",
         "comment.mention",
         "reviewer.assigned",
+        "import.completed",
+        "export.completed",
+        "export.failed",
       ],
       release_status: ["draft", "published", "archived"],
-      review_decision: ["approve", "request_changes", "comment"],
+      review_decision: ["approve", "request_changes", "comment", "reject"],
+      import_job_status: ["parsed", "committed", "discarded"],
       token_level: ["primitive", "semantic", "component"],
       token_status: [
         "draft",

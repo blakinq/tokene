@@ -18,6 +18,16 @@ export type CreateTokenState =
   | { ok: false; error: string; issues?: { code: string; message: string; path?: string }[] }
   | null;
 
+function parseTags(raw: FormDataEntryValue | null): string[] {
+  if (raw == null) return [];
+  return String(raw)
+    .split(",")
+    .map((t) => t.trim().toLowerCase())
+    .filter(Boolean)
+    .filter((t, i, arr) => arr.indexOf(t) === i)
+    .slice(0, 20);
+}
+
 export async function createTokenAction(
   _prev: CreateTokenState,
   formData: FormData,
@@ -27,6 +37,7 @@ export async function createTokenAction(
   const level = String(formData.get("level") ?? "") as TokenLevel;
   const value = String(formData.get("value") ?? "").trim();
   const description = String(formData.get("description") ?? "").trim();
+  const tags = parseTags(formData.get("tags"));
 
   const { supabase, workspace, user } = await getCurrentWorkspaceOrRedirect();
 
@@ -78,6 +89,7 @@ export async function createTokenAction(
       level,
       status,
       description: description || null,
+      tags,
       current_value: value,
       current_resolved_value: validation.resolvedValue ?? value,
       created_by: user.id,

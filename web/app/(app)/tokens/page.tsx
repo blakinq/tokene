@@ -1,21 +1,61 @@
-import { Button } from "@/components/ui/button";
-import { Filter, Search } from "lucide-react";
+import { Search } from "lucide-react";
 
 import { Input } from "@/components/ui/input";
 import { SiteHeader } from "@/components/site-header";
 import { TokensTable, type TokenRow } from "@/components/tokens-table";
 import { getCurrentWorkspaceOrRedirect } from "@/lib/supabase/queries";
-import type { TokenStatus } from "@/lib/supabase/types";
+import type { TokenLevel, TokenStatus, TokenType } from "@/lib/supabase/types";
 
 const PAGE_SIZE = 50;
+
+const TYPE_VALUES: TokenType[] = [
+  "color",
+  "spacing",
+  "sizing",
+  "radius",
+  "border_width",
+  "typography",
+  "shadow",
+  "opacity",
+  "z_index",
+  "duration",
+  "easing",
+];
+const LEVEL_VALUES: TokenLevel[] = ["primitive", "semantic", "component"];
+const STATUS_VALUES: TokenStatus[] = [
+  "draft",
+  "in_review",
+  "approved",
+  "published",
+  "deprecated",
+  "archived",
+];
 
 export default async function TokensPage({
   searchParams,
 }: {
-  searchParams: Promise<{ cursor?: string; q?: string }>;
+  searchParams: Promise<{
+    cursor?: string;
+    q?: string;
+    type?: string;
+    level?: string;
+    status?: string;
+    tag?: string;
+  }>;
 }) {
-  const { cursor, q } = await searchParams;
-  const search = (q ?? "").trim();
+  const params = await searchParams;
+  const { cursor } = params;
+  const search = (params.q ?? "").trim();
+  const typeFilter = TYPE_VALUES.includes(params.type as TokenType)
+    ? (params.type as TokenType)
+    : null;
+  const levelFilter = LEVEL_VALUES.includes(params.level as TokenLevel)
+    ? (params.level as TokenLevel)
+    : null;
+  const statusFilter = STATUS_VALUES.includes(params.status as TokenStatus)
+    ? (params.status as TokenStatus)
+    : null;
+  const tagFilter = (params.tag ?? "").trim().toLowerCase() || null;
   const { supabase, workspace } = await getCurrentWorkspaceOrRedirect();
 
   // Workspace-wide stats stay accurate across pages.
@@ -58,6 +98,10 @@ export default async function TokensPage({
   if (search) {
     query = query.ilike("name", `%${search}%`);
   }
+  if (typeFilter) query = query.eq("type", typeFilter);
+  if (levelFilter) query = query.eq("level", levelFilter);
+  if (statusFilter) query = query.eq("status", statusFilter);
+  if (tagFilter) query = query.contains("tags", [tagFilter]);
 
   const { data, error } = await query;
   if (error) throw new Error(`Failed to load tokens: ${error.message}`);
@@ -95,24 +139,68 @@ export default async function TokensPage({
             </span>
             <div className="flex flex-wrap items-end justify-between gap-4">
               <h1 className="text-3xl font-semibold tracking-tight">Tokens</h1>
-              <div className="flex items-center gap-2">
-                <form
-                  method="GET"
-                  className="relative flex items-center"
-                >
+              <form
+                method="GET"
+                className="flex flex-wrap items-center gap-2"
+              >
+                <div className="relative flex items-center">
                   <Search className="text-muted-foreground absolute left-2.5 size-3.5" />
                   <Input
                     name="q"
-                    placeholder="Search tokens by name"
+                    placeholder="Search by name"
                     defaultValue={search}
-                    className="h-9 w-64 pl-8 font-mono text-xs"
+                    className="h-9 w-56 pl-8 font-mono text-xs"
                   />
-                </form>
-                <Button variant="outline" size="sm">
-                  <Filter data-icon="inline-start" />
-                  Saved views
-                </Button>
-              </div>
+                </div>
+                <select
+                  name="type"
+                  defaultValue={typeFilter ?? ""}
+                  className="bg-background h-9 rounded-md border px-2 text-xs"
+                >
+                  <option value="">Any type</option>
+                  {TYPE_VALUES.map((t) => (
+                    <option key={t} value={t}>
+                      {t.replace("_", " ")}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  name="level"
+                  defaultValue={levelFilter ?? ""}
+                  className="bg-background h-9 rounded-md border px-2 text-xs"
+                >
+                  <option value="">Any level</option>
+                  {LEVEL_VALUES.map((l) => (
+                    <option key={l} value={l}>
+                      {l}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  name="status"
+                  defaultValue={statusFilter ?? ""}
+                  className="bg-background h-9 rounded-md border px-2 text-xs"
+                >
+                  <option value="">Any status</option>
+                  {STATUS_VALUES.map((s) => (
+                    <option key={s} value={s}>
+                      {s.replace("_", " ")}
+                    </option>
+                  ))}
+                </select>
+                <Input
+                  name="tag"
+                  placeholder="tag"
+                  defaultValue={tagFilter ?? ""}
+                  className="h-9 w-24 font-mono text-xs"
+                />
+                <button
+                  type="submit"
+                  className="bg-primary text-primary-foreground hover:bg-primary/90 h-9 rounded-md px-3 text-xs font-medium"
+                >
+                  Apply
+                </button>
+              </form>
             </div>
             <p className="text-muted-foreground max-w-2xl text-sm">
               The source of truth for design decisions. Every change flows

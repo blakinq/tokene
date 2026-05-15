@@ -21,6 +21,7 @@ import { getCurrentWorkspaceOrRedirect } from "@/lib/supabase/queries";
 import { loadSchemaConfig } from "@/lib/supabase/schema-config";
 import { WorkspaceForm } from "./workspace-form";
 import { InviteForm } from "./invite-form";
+import { MemberControls } from "./member-controls";
 import { RevokeInviteButton } from "./revoke-invite-button";
 import { SchemaForm } from "./schema-form";
 import { ApiKeysSection, type ApiKeyView } from "./api-keys-section";
@@ -44,7 +45,7 @@ type InviteRow = {
 };
 
 export default async function SettingsPage() {
-  const { supabase, workspace } = await getCurrentWorkspaceOrRedirect();
+  const { supabase, workspace, user } = await getCurrentWorkspaceOrRedirect();
   const isAdmin = workspace.role === "admin";
 
   const { data: membersRaw } = await supabase
@@ -263,12 +264,20 @@ export default async function SettingsPage() {
                               {profile?.email ?? "—"}
                             </span>
                           </div>
-                          <Badge
-                            variant="outline"
-                            className="font-normal capitalize"
-                          >
-                            {m.role}
-                          </Badge>
+                          {isAdmin ? (
+                            <MemberControls
+                              userId={m.user_id}
+                              role={m.role}
+                              isSelf={m.user_id === user.id}
+                            />
+                          ) : (
+                            <Badge
+                              variant="outline"
+                              className="font-normal capitalize"
+                            >
+                              {m.role}
+                            </Badge>
+                          )}
                         </li>
                       );
                     })}

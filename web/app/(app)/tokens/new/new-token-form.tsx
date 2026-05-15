@@ -181,6 +181,19 @@ export function NewTokenForm() {
               />
             </Field>
 
+            <Field>
+              <FieldLabel htmlFor="tags">Tags</FieldLabel>
+              <Input
+                id="tags"
+                name="tags"
+                placeholder="brand, accent, marketing"
+                className="font-mono text-xs"
+              />
+              <FieldDescription>
+                Comma-separated. Used for filtering and grouping.
+              </FieldDescription>
+            </Field>
+
             {state?.ok === false && !state.issues?.length ? (
               <Alert variant="destructive">
                 <AlertTitle>Could not create token</AlertTitle>
