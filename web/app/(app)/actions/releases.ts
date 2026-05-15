@@ -6,6 +6,7 @@ import { redirect } from "next/navigation";
 import { extractReferences, resolveReferences } from "@/lib/core/references";
 import { validateToken } from "@/lib/core/validation";
 import { getCurrentWorkspaceOrRedirect } from "@/lib/supabase/queries";
+import { loadSchemaConfig } from "@/lib/supabase/schema-config";
 import type { createSupabaseServerClient } from "@/lib/supabase/server";
 import type { TokenType } from "@/lib/supabase/types";
 
@@ -71,6 +72,8 @@ async function revalidateOpenCRs(
   ) as Array<{ id: string; stale: boolean }>;
   if (openCRs.length === 0) return;
 
+  const schema = await loadSchemaConfig(supabase, workspaceId);
+
   const { data: tokenRows } = await supabase
     .from("tokens")
     .select("name, current_value")
@@ -111,6 +114,7 @@ async function revalidateOpenCRs(
         type: it.token_type,
         value: it.after_value,
         tokensByName,
+        schema,
       });
       const err = v.issues.find((i) => i.severity === "error");
       if (err) {
@@ -226,7 +230,47 @@ async function publishCore(
     }
 
     for (const it of items) {
-      if (!it.token_id || !it.after_value) continue;
+      if (!it.token_id) continue;
+
+      // Lifecycle-only items (deprecate / archive / restore) don't change the
+      // value; they just transition status (§7.5).
+      if (it.kind === "deprecate") {
+        await supabase
+          .from("tokens")
+          .update({
+            status: "deprecated",
+            deprecated: true,
+            updated_by: userId,
+          } as never)
+          .eq("id", it.token_id)
+          .eq("workspace_id", workspaceId);
+        continue;
+      }
+      if (it.kind === "archive") {
+        await supabase
+          .from("tokens")
+          .update({
+            status: "archived",
+            updated_by: userId,
+          } as never)
+          .eq("id", it.token_id)
+          .eq("workspace_id", workspaceId);
+        continue;
+      }
+      if (it.kind === "restore") {
+        await supabase
+          .from("tokens")
+          .update({
+            status: "published",
+            deprecated: false,
+            updated_by: userId,
+          } as never)
+          .eq("id", it.token_id)
+          .eq("workspace_id", workspaceId);
+        continue;
+      }
+
+      if (!it.after_value) continue;
       tokensByName.set(it.token_name, it.after_value);
       const resolved = resolveReferences(it.after_value, {
         tokens: tokensByName,
@@ -335,6 +379,19 @@ async function publishCore(
         change_request_ids: opts.crIds,
         breaking,
       },
+    } as never);
+
+    // §15: notify everyone in the workspace that a new release shipped.
+    await supabase.rpc("notify_workspace", {
+      ws_id: workspaceId,
+      p_kind: "release.published",
+      p_entity_type: "Release",
+      p_entity_id: releaseId,
+      p_title: `Release v${opts.version} published`,
+      p_body: opts.summary ?? null,
+      p_link: `/releases/${releaseId}`,
+      p_exclude_actor: false,
+      p_role_at_least: "viewer",
     } as never);
 
     // §10.6: every still-open CR may now reference stale state.

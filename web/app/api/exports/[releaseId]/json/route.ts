@@ -6,18 +6,18 @@ import {
 } from "../_shared";
 
 export async function GET(
-  _req: Request,
+  req: Request,
   { params }: { params: Promise<{ releaseId: string }> },
 ) {
   const { releaseId } = await params;
-  const payload = await loadExportPayload(releaseId);
+  const payload = await loadExportPayload(releaseId, req);
   if (payload instanceof Response) return payload;
 
   await auditExport(
     payload.workspaceId,
     payload.release.id,
     "json",
-    payload.userId,
+    { userId: payload.userId, apiKeyId: payload.apiKeyId },
     payload.release.version,
   );
 

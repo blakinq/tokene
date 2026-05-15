@@ -13,7 +13,30 @@ export type ValidationResult = {
   resolvedValue?: string;
 };
 
-const NAME_PATTERN = /^[a-z][a-z0-9]*(\.[a-z0-9]+)+$/;
+/** Mirror of public.schema_configs columns relevant to validation. */
+export type SchemaConfig = {
+  namingPattern: string;
+  allowedTokenTypes: string[];
+  requiredFields: string[];
+};
+
+export const DEFAULT_SCHEMA: SchemaConfig = {
+  namingPattern: "^[a-z][a-z0-9]*(\\.[a-z0-9]+)+$",
+  allowedTokenTypes: [
+    "color",
+    "spacing",
+    "sizing",
+    "radius",
+    "border_width",
+    "typography",
+    "shadow",
+    "opacity",
+    "z_index",
+    "duration",
+    "easing",
+  ],
+  requiredFields: ["name", "type", "value", "description"],
+};
 
 const HEX = /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/;
 const RGB = /^rgba?\(\s*\d+\s*,\s*\d+\s*,\s*\d+\s*(?:,\s*[\d.]+\s*)?\)$/;
@@ -30,10 +53,20 @@ export type ValidateInput = {
   /** Token names that already exist in the workspace (excluding this one). */
   existingNames?: Set<string>;
   description?: string;
+  /** Workspace governance config (§18). Falls back to DEFAULT_SCHEMA. */
+  schema?: SchemaConfig;
 };
 
 export function validateToken(input: ValidateInput): ValidationResult {
   const issues: ValidationIssue[] = [];
+  const schema = input.schema ?? DEFAULT_SCHEMA;
+
+  let nameRegex: RegExp;
+  try {
+    nameRegex = new RegExp(schema.namingPattern);
+  } catch {
+    nameRegex = new RegExp(DEFAULT_SCHEMA.namingPattern);
+  }
 
   if (!input.name) {
     issues.push({
@@ -42,12 +75,11 @@ export function validateToken(input: ValidateInput): ValidationResult {
       message: "Token name is required.",
       path: "name",
     });
-  } else if (!NAME_PATTERN.test(input.name)) {
+  } else if (!nameRegex.test(input.name)) {
     issues.push({
       severity: "error",
       code: "name.invalid",
-      message:
-        "Token names must be dotted lowercase paths (e.g. color.blue.600).",
+      message: `Token name must match ${schema.namingPattern}.`,
       path: "name",
     });
   }
@@ -61,7 +93,17 @@ export function validateToken(input: ValidateInput): ValidationResult {
     });
   }
 
-  if (!input.value) {
+  if (input.type && !schema.allowedTokenTypes.includes(input.type)) {
+    issues.push({
+      severity: "error",
+      code: "type.disallowed",
+      message: `Token type "${input.type}" is not enabled for this workspace.`,
+      path: "type",
+    });
+  }
+
+  const requireValue = schema.requiredFields.includes("value");
+  if (requireValue && !input.value) {
     issues.push({
       severity: "error",
       code: "value.required",
@@ -70,11 +112,14 @@ export function validateToken(input: ValidateInput): ValidationResult {
     });
   }
 
+  const requireDescription = schema.requiredFields.includes("description");
   if (!input.description) {
     issues.push({
-      severity: "warning",
+      severity: requireDescription ? "error" : "warning",
       code: "description.missing",
-      message: "Add usage guidance to help engineers pick the right token.",
+      message: requireDescription
+        ? "Workspace settings require a description on every token."
+        : "Add usage guidance to help engineers pick the right token.",
       path: "description",
     });
   }

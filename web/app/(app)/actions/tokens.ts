@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 
 import { getCurrentWorkspaceOrRedirect } from "@/lib/supabase/queries";
+import { loadSchemaConfig } from "@/lib/supabase/schema-config";
 import { extractReferences } from "@/lib/core/references";
 import { validateToken } from "@/lib/core/validation";
 import type {
@@ -45,6 +46,7 @@ export async function createTokenAction(
     existingNames.add(row.name);
   }
 
+  const schema = await loadSchemaConfig(supabase, workspace.workspaceId);
   const validation = validateToken({
     name,
     type,
@@ -52,6 +54,7 @@ export async function createTokenAction(
     description: description || undefined,
     tokensByName,
     existingNames,
+    schema,
   });
 
   if (!validation.valid) {

@@ -9,13 +9,6 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import {
-  Field,
-  FieldDescription,
-  FieldGroup,
-  FieldLabel,
-} from "@/components/ui/field";
-import { Input } from "@/components/ui/input";
-import {
   Tabs,
   TabsContent,
   TabsList,
@@ -25,9 +18,12 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { SiteHeader } from "@/components/site-header";
 import { loadProfiles } from "@/lib/supabase/profiles";
 import { getCurrentWorkspaceOrRedirect } from "@/lib/supabase/queries";
+import { loadSchemaConfig } from "@/lib/supabase/schema-config";
 import { WorkspaceForm } from "./workspace-form";
 import { InviteForm } from "./invite-form";
 import { RevokeInviteButton } from "./revoke-invite-button";
+import { SchemaForm } from "./schema-form";
+import { ApiKeysSection, type ApiKeyView } from "./api-keys-section";
 
 type MemberRow = {
   role: "viewer" | "contributor" | "reviewer" | "admin";
@@ -68,6 +64,20 @@ export default async function SettingsPage() {
     .order("created_at", { ascending: false });
   const invites = (invitesRaw ?? []) as unknown as InviteRow[];
 
+  const schemaConfig = await loadSchemaConfig(supabase, workspace.workspaceId);
+
+  let apiKeys: ApiKeyView[] = [];
+  if (isAdmin) {
+    const { data: keysRaw } = await supabase
+      .from("api_keys")
+      .select(
+        "id, name, prefix, scopes, created_at, last_used_at, revoked_at",
+      )
+      .eq("workspace_id", workspace.workspaceId)
+      .order("created_at", { ascending: false });
+    apiKeys = (keysRaw ?? []) as unknown as ApiKeyView[];
+  }
+
   return (
     <>
       <SiteHeader
@@ -102,7 +112,8 @@ export default async function SettingsPage() {
           <TabsList>
             <TabsTrigger value="general">General</TabsTrigger>
             <TabsTrigger value="members">Members</TabsTrigger>
-            <TabsTrigger value="schema">Schema</TabsTrigger>
+            <TabsTrigger value="schema">Schema + approvals</TabsTrigger>
+            {isAdmin ? <TabsTrigger value="api">API keys</TabsTrigger> : null}
           </TabsList>
 
           <TabsContent value="general" className="flex flex-col gap-6">
@@ -254,35 +265,14 @@ export default async function SettingsPage() {
           </TabsContent>
 
           <TabsContent value="schema" className="flex flex-col gap-6">
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-base font-medium">
-                  Token naming
-                </CardTitle>
-                <CardDescription>
-                  Pattern enforced by validation. Read-only in MVP — change in
-                  code at <span className="font-mono">lib/core/validation.ts</span>.
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                <FieldGroup>
-                  <Field>
-                    <FieldLabel htmlFor="pattern">Naming pattern</FieldLabel>
-                    <Input
-                      id="pattern"
-                      defaultValue="^[a-z][a-z0-9]*(\.[a-z0-9]+)+$"
-                      className="font-mono text-xs"
-                      disabled
-                    />
-                    <FieldDescription>
-                      Regular expression. Applied to every token name. e.g.{" "}
-                      <span className="font-mono">color.blue.600</span>.
-                    </FieldDescription>
-                  </Field>
-                </FieldGroup>
-              </CardContent>
-            </Card>
+            <SchemaForm initial={schemaConfig} disabled={!isAdmin} />
           </TabsContent>
+
+          {isAdmin ? (
+            <TabsContent value="api" className="flex flex-col gap-6">
+              <ApiKeysSection keys={apiKeys} isAdmin={isAdmin} />
+            </TabsContent>
+          ) : null}
         </Tabs>
       </div>
     </>

@@ -1,22 +1,25 @@
 import { Button } from "@/components/ui/button";
-import { Filter } from "lucide-react";
+import { Filter, Search } from "lucide-react";
 
+import { Input } from "@/components/ui/input";
 import { SiteHeader } from "@/components/site-header";
 import { TokensTable, type TokenRow } from "@/components/tokens-table";
 import { getCurrentWorkspaceOrRedirect } from "@/lib/supabase/queries";
+import type { TokenStatus } from "@/lib/supabase/types";
 
 const PAGE_SIZE = 50;
 
 export default async function TokensPage({
   searchParams,
 }: {
-  searchParams: Promise<{ cursor?: string }>;
+  searchParams: Promise<{ cursor?: string; q?: string }>;
 }) {
-  const { cursor } = await searchParams;
+  const { cursor, q } = await searchParams;
+  const search = (q ?? "").trim();
   const { supabase, workspace } = await getCurrentWorkspaceOrRedirect();
 
   // Workspace-wide stats stay accurate across pages.
-  const statusFor = async (status: string) => {
+  const statusFor = async (status: TokenStatus) => {
     const { count } = await supabase
       .from("tokens")
       .select("*", { count: "exact", head: true })
@@ -38,6 +41,8 @@ export default async function TokensPage({
     ]);
 
   // §29.2: cursor pagination by name. Fetch one extra row to detect `hasMore`.
+  // §17: when `q` is present we use the trigram-backed `tokens_name_trgm_idx`
+  // via ilike; pagination is still cursor-by-name so the extra row trick works.
   let query = supabase
     .from("tokens")
     .select(
@@ -49,6 +54,9 @@ export default async function TokensPage({
 
   if (cursor) {
     query = query.gt("name", cursor);
+  }
+  if (search) {
+    query = query.ilike("name", `%${search}%`);
   }
 
   const { data, error } = await query;
@@ -87,10 +95,24 @@ export default async function TokensPage({
             </span>
             <div className="flex flex-wrap items-end justify-between gap-4">
               <h1 className="text-3xl font-semibold tracking-tight">Tokens</h1>
-              <Button variant="outline" size="sm">
-                <Filter data-icon="inline-start" />
-                Saved views
-              </Button>
+              <div className="flex items-center gap-2">
+                <form
+                  method="GET"
+                  className="relative flex items-center"
+                >
+                  <Search className="text-muted-foreground absolute left-2.5 size-3.5" />
+                  <Input
+                    name="q"
+                    placeholder="Search tokens by name"
+                    defaultValue={search}
+                    className="h-9 w-64 pl-8 font-mono text-xs"
+                  />
+                </form>
+                <Button variant="outline" size="sm">
+                  <Filter data-icon="inline-start" />
+                  Saved views
+                </Button>
+              </div>
             </div>
             <p className="text-muted-foreground max-w-2xl text-sm">
               The source of truth for design decisions. Every change flows

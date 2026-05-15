@@ -1,6 +1,15 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { ArrowLeft, Copy, GitBranch, Pencil } from "lucide-react";
+import {
+  Archive,
+  ArchiveRestore,
+  ArrowLeft,
+  Ban,
+  Clock,
+  Copy,
+  GitBranch,
+  Pencil,
+} from "lucide-react";
 
 import {
   Avatar,
@@ -26,7 +35,9 @@ import { ColorSwatch } from "@/components/color-swatch";
 import { SiteHeader } from "@/components/site-header";
 import { TokenStatusBadge } from "@/components/status-badge";
 import { formatRelativeDate } from "@/lib/mock-data";
+import { loadProfiles, formatActorName } from "@/lib/supabase/profiles";
 import { getCurrentWorkspaceOrRedirect } from "@/lib/supabase/queries";
+import { createLifecycleCR } from "@/app/(app)/actions/change-requests";
 import { proposeChangeForToken } from "./propose-action";
 
 type TokenLike = {
@@ -73,14 +84,14 @@ export default async function TokenDetailPage({
   const { data: referencesRaw } = await supabase
     .from("token_references")
     .select(
-      "referenced_token_id, referenced:referenced_token_id(id, name, type, level, current_resolved_value)",
+      "referenced_token_id, referenced:tokens!token_references_referenced_token_id_fkey(id, name, type, level, current_resolved_value)",
     )
     .eq("source_token_id", t.id);
 
   const { data: dependentsRaw } = await supabase
     .from("token_references")
     .select(
-      "source_token_id, source:source_token_id(id, name, type, level, current_resolved_value)",
+      "source_token_id, source:tokens!token_references_source_token_id_fkey(id, name, type, level, current_resolved_value)",
     )
     .eq("referenced_token_id", t.id);
 
@@ -128,6 +139,52 @@ export default async function TokenDetailPage({
       } => Boolean(x),
     );
 
+  const { data: versionsRaw } = await supabase
+    .from("token_versions")
+    .select("id, value, resolved_value, created_at, created_by, release_id")
+    .eq("token_id", t.id)
+    .order("created_at", { ascending: false })
+    .limit(50);
+
+  const versions = ((versionsRaw ?? []) as Array<{
+    id: string;
+    value: string;
+    resolved_value: string;
+    created_at: string;
+    created_by: string | null;
+    release_id: string | null;
+  }>);
+
+  const versionProfiles = await loadProfiles(
+    supabase,
+    versions.map((v) => v.created_by),
+  );
+
+  const releaseIds = Array.from(
+    new Set(versions.map((v) => v.release_id).filter((x): x is string => Boolean(x))),
+  );
+  let releaseLabels = new Map<string, string>();
+  if (releaseIds.length > 0) {
+    const { data: relRows } = await supabase
+      .from("releases")
+      .select("id, version")
+      .in("id", releaseIds);
+    releaseLabels = new Map(
+      ((relRows ?? []) as Array<{ id: string; version: string }>).map((r) => [
+        r.id,
+        r.version,
+      ]),
+    );
+  }
+
+  const canMutate =
+    workspace.role === "contributor" ||
+    workspace.role === "reviewer" ||
+    workspace.role === "admin";
+  const canDeprecate = canMutate && t.status === "published";
+  const canArchive = canMutate && t.status === "deprecated";
+  const canRestore = canMutate && (t.status === "deprecated" || t.status === "archived");
+
   return (
     <>
       <SiteHeader
@@ -173,11 +230,41 @@ export default async function TokenDetailPage({
                 </p>
               ) : null}
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <Button variant="outline" size="sm">
                 <Copy data-icon="inline-start" />
                 Copy name
               </Button>
+              {canDeprecate ? (
+                <form action={createLifecycleCR}>
+                  <input type="hidden" name="tokenId" value={t.id} />
+                  <input type="hidden" name="kind" value="deprecate" />
+                  <Button type="submit" variant="outline" size="sm">
+                    <Ban data-icon="inline-start" />
+                    Deprecate
+                  </Button>
+                </form>
+              ) : null}
+              {canArchive ? (
+                <form action={createLifecycleCR}>
+                  <input type="hidden" name="tokenId" value={t.id} />
+                  <input type="hidden" name="kind" value="archive" />
+                  <Button type="submit" variant="outline" size="sm">
+                    <Archive data-icon="inline-start" />
+                    Archive
+                  </Button>
+                </form>
+              ) : null}
+              {canRestore ? (
+                <form action={createLifecycleCR}>
+                  <input type="hidden" name="tokenId" value={t.id} />
+                  <input type="hidden" name="kind" value="restore" />
+                  <Button type="submit" variant="outline" size="sm">
+                    <ArchiveRestore data-icon="inline-start" />
+                    Restore
+                  </Button>
+                </form>
+              ) : null}
               <form action={proposeChangeForToken}>
                 <input type="hidden" name="tokenId" value={t.id} />
                 <input type="hidden" name="tokenName" value={t.name} />
@@ -222,6 +309,12 @@ export default async function TokenDetailPage({
                       Dependents
                       <span className="text-muted-foreground ml-1.5 font-mono text-xs">
                         {dependents.length}
+                      </span>
+                    </TabsTrigger>
+                    <TabsTrigger value="history">
+                      History
+                      <span className="text-muted-foreground ml-1.5 font-mono text-xs">
+                        {versions.length}
                       </span>
                     </TabsTrigger>
                   </TabsList>
@@ -291,6 +384,65 @@ export default async function TokenDetailPage({
                           </li>
                         ))}
                       </ul>
+                    )}
+                  </TabsContent>
+                  <TabsContent value="history" className="mt-0">
+                    {versions.length === 0 ? (
+                      <p className="text-muted-foreground py-6 text-center text-sm">
+                        No versions recorded yet.
+                      </p>
+                    ) : (
+                      <ol className="flex flex-col">
+                        {versions.map((v, i) => {
+                          const releaseLabel = v.release_id
+                            ? releaseLabels.get(v.release_id)
+                            : null;
+                          const profile = v.created_by
+                            ? versionProfiles.get(v.created_by)
+                            : undefined;
+                          const actor = formatActorName(profile, "System");
+                          return (
+                            <li
+                              key={v.id}
+                              className="border-border/60 relative flex items-start gap-3 border-b py-3 pl-4 last:border-b-0"
+                            >
+                              <span
+                                className={`mt-1.5 size-2 shrink-0 rounded-full ${i === 0 ? "bg-primary" : "bg-muted-foreground/40"}`}
+                                aria-hidden
+                              />
+                              <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+                                <div className="flex items-center gap-2">
+                                  <Clock className="text-muted-foreground size-3" />
+                                  <span className="text-muted-foreground text-xs">
+                                    {formatRelativeDate(v.created_at)} · {actor}
+                                  </span>
+                                  {releaseLabel ? (
+                                    <Link
+                                      href={`/releases/${v.release_id}`}
+                                      className="ml-auto font-mono text-xs hover:underline"
+                                    >
+                                      v{releaseLabel}
+                                    </Link>
+                                  ) : (
+                                    <Badge
+                                      variant="outline"
+                                      className="ml-auto font-normal text-[10px]"
+                                    >
+                                      draft
+                                    </Badge>
+                                  )}
+                                </div>
+                                <code className="text-xs">{v.value}</code>
+                                {v.value !== v.resolved_value ? (
+                                  <code className="text-muted-foreground text-[10px]">
+                                    → {v.resolved_value}
+                                  </code>
+                                ) : null}
+                              </div>
+                            </li>
+                          );
+                        })}
+                      </ol>
                     )}
                   </TabsContent>
                 </CardContent>

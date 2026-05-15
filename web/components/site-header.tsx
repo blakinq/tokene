@@ -1,13 +1,14 @@
 "use client";
 
 import Link from "next/link";
-import { Bell, Plus, Search } from "lucide-react";
+import { Plus, Search } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Kbd, KbdGroup } from "@/components/ui/kbd";
 import { Separator } from "@/components/ui/separator";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import { CommandMenu } from "@/components/command-menu";
+import { NotificationsBell } from "@/components/notifications-bell";
 
 type Crumb = { label: string; href?: string };
 
@@ -50,9 +51,7 @@ export function SiteHeader({
       </nav>
       <div className="ml-auto flex items-center gap-1.5">
         <CommandMenu />
-        <Button variant="ghost" size="icon" aria-label="Notifications">
-          <Bell />
-        </Button>
+        <NotificationsBell />
         {primaryAction ? (
           <Button asChild size="sm">
             <Link href={primaryAction.href}>

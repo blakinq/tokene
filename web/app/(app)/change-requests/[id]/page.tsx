@@ -28,9 +28,11 @@ import { ChangeRequestStatusBadge } from "@/components/status-badge";
 import { formatRelativeDate } from "@/lib/mock-data";
 import { formatActorName, loadProfiles } from "@/lib/supabase/profiles";
 import { getCurrentWorkspaceOrRedirect } from "@/lib/supabase/queries";
+import { Textarea } from "@/components/ui/textarea";
 import {
   approveChangeRequest,
   requestChangesOnCR,
+  updateChangeRequestMeta,
 } from "@/app/(app)/actions/change-requests";
 import { deleteCommentFromCR } from "@/app/(app)/actions/comments";
 import { publishReleaseFromCR } from "@/app/(app)/actions/releases";
@@ -49,6 +51,7 @@ type CRRow = {
   breaking: boolean;
   stale: boolean;
   stale_reason: string | null;
+  migration_notes: string | null;
   updated_at: string;
   author_id: string | null;
   items: {
@@ -85,7 +88,7 @@ export default async function ChangeRequestDetailPage({
   const { data, error } = await supabase
     .from("change_requests")
     .select(
-      "id, short_id, title, description, status, breaking, stale, stale_reason, updated_at, author_id, " +
+      "id, short_id, title, description, status, breaking, stale, stale_reason, migration_notes, updated_at, author_id, " +
         "items:change_request_items(id, kind, token_name, before_value, after_value, note), " +
         "reviews(id, decision, created_at, reviewer_id)",
     )
@@ -175,6 +178,39 @@ export default async function ChangeRequestDetailPage({
                   "Workspace state changed after this request was opened. Re-validate before approving."}
               </AlertDescription>
             </Alert>
+          ) : null}
+          {cr.breaking &&
+          (cr.status === "open" || cr.status === "changes_requested") ? (
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base font-medium">
+                  Migration notes
+                </CardTitle>
+                <CardDescription>
+                  This change is breaking. Workspace settings may require notes
+                  before approval.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <form
+                  action={updateChangeRequestMeta}
+                  className="flex flex-col gap-3"
+                >
+                  <input type="hidden" name="id" value={cr.id} />
+                  <Textarea
+                    name="migrationNotes"
+                    rows={4}
+                    placeholder="Walk consumers through what changed and how to update."
+                    defaultValue={cr.migration_notes ?? ""}
+                  />
+                  <div className="flex justify-end">
+                    <Button type="submit" size="sm" variant="outline">
+                      Save notes
+                    </Button>
+                  </div>
+                </form>
+              </CardContent>
+            </Card>
           ) : null}
         </div>
 

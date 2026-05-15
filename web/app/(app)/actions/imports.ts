@@ -7,6 +7,14 @@ import { extractReferences } from "@/lib/core/references";
 import { parseTokensJson } from "@/lib/core/importer";
 import { validateToken } from "@/lib/core/validation";
 import { getCurrentWorkspaceOrRedirect } from "@/lib/supabase/queries";
+import { loadSchemaConfig } from "@/lib/supabase/schema-config";
+
+/**
+ * §14.6: keep imports bounded. 1 MiB of JSON is more than enough for a real
+ * design system and protects the parser + DB from accidental megafiles.
+ */
+const MAX_IMPORT_BYTES = 1024 * 1024;
+const MAX_IMPORT_TOKENS = 5000;
 
 export type ImportState =
   | { ok: true; changeRequestId: string }
@@ -25,11 +33,24 @@ export async function importTokensAction(
   const title = String(formData.get("title") ?? "").trim();
 
   if (!raw) return { ok: false, error: "Paste JSON or upload a file first." };
+  if (Buffer.byteLength(raw, "utf8") > MAX_IMPORT_BYTES) {
+    return {
+      ok: false,
+      error: `Import payload is larger than ${MAX_IMPORT_BYTES / 1024} KiB. Split it into multiple imports.`,
+    };
+  }
 
   const parsed = parseTokensJson(raw);
   if (!parsed.ok) return { ok: false, error: parsed.error };
+  if (parsed.tokens.length > MAX_IMPORT_TOKENS) {
+    return {
+      ok: false,
+      error: `Import contains ${parsed.tokens.length} tokens — the per-import limit is ${MAX_IMPORT_TOKENS}.`,
+    };
+  }
 
   const { supabase, workspace, user } = await getCurrentWorkspaceOrRedirect();
+  const schema = await loadSchemaConfig(supabase, workspace.workspaceId);
 
   // Pull existing tokens by name for diffing + validation.
   const { data: existing } = await supabase
@@ -71,6 +92,7 @@ export async function importTokensAction(
       value: t.value,
       tokensByName,
       existingNames: new Set(), // we'll handle dupes via plan
+      schema,
     });
     const errs = v.issues.filter((i) => i.severity === "error");
     if (errs.length > 0) {
@@ -116,6 +138,12 @@ export async function importTokensAction(
   const shortId = `CR-${String((count ?? 0) + 1).padStart(3, "0")}`;
   const finalTitle = title || `Import ${plan.length} tokens`;
 
+  // §8.5: any value-changing edit on existing tokens is breaking. Pure adds
+  // (new draft tokens) aren't.
+  const breaking = plan.some(
+    (p) => p.kind === "edit" && (p.before ?? "") !== p.after,
+  );
+
   const { data: cr, error: crErr } = await supabase
     .from("change_requests")
     .insert({
@@ -124,15 +152,17 @@ export async function importTokensAction(
       title: finalTitle,
       description: `Imported from JSON. ${plan.filter((p) => p.kind === "add").length} new, ${plan.filter((p) => p.kind === "edit").length} edited.`,
       status: "open",
+      breaking,
       author_id: user.id,
     } as never)
-    .select("id")
+    .select("id, short_id, title")
     .single();
 
   if (crErr || !cr) {
     return { ok: false, error: crErr?.message ?? "Failed to create change request." };
   }
-  const crId = (cr as { id: string }).id;
+  const crRow = cr as { id: string; short_id: string; title: string };
+  const crId = crRow.id;
 
   // For each plan entry, create the draft token (if `add`) and a change_request_item.
   let position = 0;
@@ -203,6 +233,18 @@ export async function importTokensAction(
       added: plan.filter((p) => p.kind === "add").length,
       edited: plan.filter((p) => p.kind === "edit").length,
     },
+  } as never);
+
+  await supabase.rpc("notify_workspace", {
+    ws_id: workspace.workspaceId,
+    p_kind: "change_request.submitted",
+    p_entity_type: "ChangeRequest",
+    p_entity_id: crId,
+    p_title: `${crRow.short_id} ready for review`,
+    p_body: crRow.title,
+    p_link: `/change-requests/${crId}`,
+    p_exclude_actor: true,
+    p_role_at_least: "reviewer",
   } as never);
 
   revalidatePath("/imports");

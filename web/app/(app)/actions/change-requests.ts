@@ -5,6 +5,10 @@ import { redirect } from "next/navigation";
 
 import { validateToken } from "@/lib/core/validation";
 import { getCurrentWorkspaceOrRedirect } from "@/lib/supabase/queries";
+import {
+  loadSchemaConfig,
+  type WorkspaceSchemaConfig,
+} from "@/lib/supabase/schema-config";
 import type { createSupabaseServerClient } from "@/lib/supabase/server";
 import type { TokenStatus } from "@/lib/supabase/types";
 
@@ -47,6 +51,48 @@ async function applyTokenStatusForCR(
     .eq("workspace_id", workspaceId);
 }
 
+/**
+ * §8.5 / §11.3: a CR is breaking if any of its items would change observable
+ * behaviour for downstream consumers — value edits to a published token,
+ * deprecations, archives, and renames all qualify.
+ */
+function computeBreakingForItems(
+  items: Array<{
+    kind: string;
+    before_value: string | null;
+    after_value: string | null;
+  }>,
+): boolean {
+  return items.some((it) => {
+    if (it.kind === "deprecate" || it.kind === "archive" || it.kind === "rename")
+      return true;
+    if (it.kind === "edit") {
+      return (it.before_value ?? "") !== (it.after_value ?? "");
+    }
+    return false;
+  });
+}
+
+async function dispatchSubmittedNotification(
+  supabase: SupabaseClient,
+  workspaceId: string,
+  crId: string,
+  shortId: string,
+  title: string,
+): Promise<void> {
+  await supabase.rpc("notify_workspace", {
+    ws_id: workspaceId,
+    p_kind: "change_request.submitted",
+    p_entity_type: "ChangeRequest",
+    p_entity_id: crId,
+    p_title: `${shortId} ready for review`,
+    p_body: title,
+    p_link: `/change-requests/${crId}`,
+    p_exclude_actor: true,
+    p_role_at_least: "reviewer",
+  } as never);
+}
+
 export type CreateCRState =
   | { ok: true; id: string }
   | { ok: false; error: string }
@@ -87,6 +133,15 @@ export async function createChangeRequestForToken(
     status: string;
   };
 
+  const itemKind = tok.status === "draft" ? "add" : "edit";
+  const breaking = computeBreakingForItems([
+    {
+      kind: itemKind,
+      before_value: tok.status === "draft" ? null : tok.current_value,
+      after_value: tok.current_value,
+    },
+  ]);
+
   const { data: cr, error: crError } = await supabase
     .from("change_requests")
     .insert({
@@ -95,21 +150,22 @@ export async function createChangeRequestForToken(
       title: title || `Promote ${tok.name}`,
       description: description || null,
       status: "open",
+      breaking,
       author_id: user.id,
     } as never)
-    .select("id")
+    .select("id, short_id, title")
     .single();
 
   if (crError || !cr) {
     return { ok: false, error: crError?.message ?? "Failed to create CR." };
   }
 
-  const crId = (cr as { id: string }).id;
+  const crRow = cr as { id: string; short_id: string; title: string };
 
   await supabase.from("change_request_items").insert({
-    change_request_id: crId,
+    change_request_id: crRow.id,
     workspace_id: workspace.workspaceId,
-    kind: tok.status === "draft" ? "add" : "edit",
+    kind: itemKind,
     token_id: tok.id,
     token_name: tok.name,
     token_type: tok.type,
@@ -122,7 +178,7 @@ export async function createChangeRequestForToken(
   await applyTokenStatusForCR(
     supabase,
     workspace.workspaceId,
-    crId,
+    crRow.id,
     "in_review",
     ["draft"],
   );
@@ -131,11 +187,19 @@ export async function createChangeRequestForToken(
     ws_id: workspace.workspaceId,
     p_action: "change_request.submitted",
     p_entity_type: "ChangeRequest",
-    p_entity_id: crId,
+    p_entity_id: crRow.id,
   } as never);
 
+  await dispatchSubmittedNotification(
+    supabase,
+    workspace.workspaceId,
+    crRow.id,
+    crRow.short_id,
+    crRow.title,
+  );
+
   revalidatePath("/change-requests");
-  return { ok: true, id: crId };
+  return { ok: true, id: crRow.id };
 }
 
 export type NewCRState =
@@ -149,6 +213,7 @@ export async function createBlankChangeRequest(
 ): Promise<NewCRState> {
   const title = String(formData.get("title") ?? "").trim();
   const description = String(formData.get("description") ?? "").trim();
+  const migrationNotes = String(formData.get("migrationNotes") ?? "").trim();
   const tokenIds = formData.getAll("tokenIds").map((x) => String(x));
 
   if (!title) return { ok: false, error: "Title is required." };
@@ -162,6 +227,32 @@ export async function createBlankChangeRequest(
 
   const shortId = `CR-${String((count ?? 0) + 1).padStart(3, "0")}`;
 
+  // Fetch token rows up front so we can compute breaking before insert.
+  let tokenRows: Array<{
+    id: string;
+    name: string;
+    type: string;
+    level: string;
+    current_value: string | null;
+    status: string;
+  }> = [];
+  if (tokenIds.length > 0) {
+    const { data: toks } = await supabase
+      .from("tokens")
+      .select("id, name, type, level, current_value, status")
+      .eq("workspace_id", workspace.workspaceId)
+      .in("id", tokenIds);
+    tokenRows = (toks ?? []) as typeof tokenRows;
+  }
+
+  const breaking = computeBreakingForItems(
+    tokenRows.map((t) => ({
+      kind: t.status === "draft" ? "add" : "edit",
+      before_value: t.status === "draft" ? null : t.current_value,
+      after_value: t.current_value,
+    })),
+  );
+
   const { data: cr, error: crErr } = await supabase
     .from("change_requests")
     .insert({
@@ -169,33 +260,22 @@ export async function createBlankChangeRequest(
       short_id: shortId,
       title,
       description: description || null,
+      migration_notes: migrationNotes || null,
       status: "open",
+      breaking,
       author_id: user.id,
     } as never)
-    .select("id")
+    .select("id, short_id, title")
     .single();
 
   if (crErr || !cr) {
     return { ok: false, error: crErr?.message ?? "Failed to create CR." };
   }
-  const crId = (cr as { id: string }).id;
+  const crRow = cr as { id: string; short_id: string; title: string };
 
-  if (tokenIds.length > 0) {
-    const { data: toks } = await supabase
-      .from("tokens")
-      .select("id, name, type, level, current_value, status")
-      .eq("workspace_id", workspace.workspaceId)
-      .in("id", tokenIds);
-
-    const rows = ((toks ?? []) as Array<{
-      id: string;
-      name: string;
-      type: string;
-      level: string;
-      current_value: string | null;
-      status: string;
-    }>).map((t, i) => ({
-      change_request_id: crId,
+  if (tokenRows.length > 0) {
+    const rows = tokenRows.map((t, i) => ({
+      change_request_id: crRow.id,
       workspace_id: workspace.workspaceId,
       kind: t.status === "draft" ? "add" : "edit",
       token_id: t.id,
@@ -215,7 +295,7 @@ export async function createBlankChangeRequest(
   await applyTokenStatusForCR(
     supabase,
     workspace.workspaceId,
-    crId,
+    crRow.id,
     "in_review",
     ["draft"],
   );
@@ -224,16 +304,77 @@ export async function createBlankChangeRequest(
     ws_id: workspace.workspaceId,
     p_action: "change_request.submitted",
     p_entity_type: "ChangeRequest",
-    p_entity_id: crId,
+    p_entity_id: crRow.id,
   } as never);
 
+  await dispatchSubmittedNotification(
+    supabase,
+    workspace.workspaceId,
+    crRow.id,
+    crRow.short_id,
+    crRow.title,
+  );
+
   revalidatePath("/change-requests");
-  redirect(`/change-requests/${crId}`);
+  redirect(`/change-requests/${crRow.id}`);
+}
+
+/**
+ * Server-side enforcement of approval rules (§11.3). Returns null on success,
+ * otherwise a human-readable reason that should be thrown to the user.
+ */
+function enforceApprovalRules(
+  schema: WorkspaceSchemaConfig,
+  cr: {
+    author_id: string | null;
+    breaking: boolean;
+    migration_notes: string | null;
+  },
+  reviewer: { id: string; role: string },
+  reviewsSoFar: Array<{ reviewer_id: string | null; reviewer_role: string }>,
+): { error: string } | { ok: true; finalize: boolean } {
+  if (!schema.allowSelfApproval && cr.author_id === reviewer.id) {
+    return { error: "You can't approve your own change request." };
+  }
+
+  if (cr.breaking && schema.requireMigrationNotesForBreaking) {
+    if (!cr.migration_notes || !cr.migration_notes.trim()) {
+      return {
+        error:
+          "This change is breaking — the workspace requires migration notes before it can be approved.",
+      };
+    }
+  }
+
+  // Distinct approving reviewers including this one.
+  const approverIds = new Set(
+    reviewsSoFar
+      .map((r) => r.reviewer_id)
+      .filter((id): id is string => Boolean(id)),
+  );
+  approverIds.add(reviewer.id);
+
+  if (cr.breaking && schema.requireAdminForBreaking) {
+    const hasAdmin =
+      reviewer.role === "admin" ||
+      reviewsSoFar.some((r) => r.reviewer_role === "admin");
+    if (!hasAdmin) {
+      return {
+        error:
+          "This change is breaking — at least one admin approval is required.",
+      };
+    }
+  }
+
+  const finalize = approverIds.size >= schema.minApprovalCount;
+  return { ok: true, finalize };
 }
 
 export async function approveChangeRequest(formData: FormData) {
   const id = String(formData.get("id"));
   const { supabase, workspace, user } = await getCurrentWorkspaceOrRedirect();
+
+  const schema = await loadSchemaConfig(supabase, workspace.workspaceId);
 
   // §11.4: re-run validation before recording an approval. If any item produces
   // an error against current workspace state (plus the CR's own pending edits),
@@ -264,8 +405,6 @@ export async function approveChangeRequest(formData: FormData) {
   }>) {
     tokensByName.set(row.name, row.current_value ?? "");
   }
-  // Layer the CR's own edits into the resolution map so references between
-  // sibling items resolve.
   for (const it of items) {
     if (it.after_value) tokensByName.set(it.token_name, it.after_value);
   }
@@ -277,6 +416,7 @@ export async function approveChangeRequest(formData: FormData) {
       type: it.token_type,
       value: it.after_value,
       tokensByName,
+      schema,
     });
     const firstErr = v.issues.find((i) => i.severity === "error");
     if (firstErr) {
@@ -286,6 +426,64 @@ export async function approveChangeRequest(formData: FormData) {
     }
   }
 
+  // Load CR + existing reviews + reviewer roles to enforce approval rules.
+  const { data: crRow } = await supabase
+    .from("change_requests")
+    .select("id, short_id, title, author_id, breaking, migration_notes")
+    .eq("id", id)
+    .eq("workspace_id", workspace.workspaceId)
+    .single();
+  if (!crRow) throw new Error("Change request not found.");
+  const cr = crRow as {
+    id: string;
+    short_id: string;
+    title: string;
+    author_id: string | null;
+    breaking: boolean;
+    migration_notes: string | null;
+  };
+
+  const { data: priorReviewsRaw } = await supabase
+    .from("reviews")
+    .select("reviewer_id")
+    .eq("change_request_id", id)
+    .eq("workspace_id", workspace.workspaceId)
+    .eq("decision", "approve");
+  const priorReviewerIds = ((priorReviewsRaw ?? []) as Array<{
+    reviewer_id: string | null;
+  }>)
+    .map((r) => r.reviewer_id)
+    .filter((x): x is string => Boolean(x));
+
+  // Get reviewer roles in one shot.
+  const allReviewerIds = Array.from(
+    new Set([...priorReviewerIds, user.id]),
+  );
+  const { data: rolesRaw } = await supabase
+    .from("workspace_members")
+    .select("user_id, role")
+    .eq("workspace_id", workspace.workspaceId)
+    .in("user_id", allReviewerIds);
+  const roleByUser = new Map(
+    ((rolesRaw ?? []) as Array<{ user_id: string; role: string }>).map((r) => [
+      r.user_id,
+      r.role,
+    ]),
+  );
+
+  const decision = enforceApprovalRules(
+    schema,
+    cr,
+    { id: user.id, role: roleByUser.get(user.id) ?? "viewer" },
+    priorReviewerIds.map((rid) => ({
+      reviewer_id: rid,
+      reviewer_role: roleByUser.get(rid) ?? "viewer",
+    })),
+  );
+  if ("error" in decision) {
+    throw new Error(decision.error);
+  }
+
   await supabase.from("reviews").insert({
     change_request_id: id,
     workspace_id: workspace.workspaceId,
@@ -293,30 +491,45 @@ export async function approveChangeRequest(formData: FormData) {
     decision: "approve",
   } as never);
 
-  await supabase
-    .from("change_requests")
-    .update({
-      status: "approved",
-      stale: false,
-      stale_reason: null,
-    } as never)
-    .eq("id", id)
-    .eq("workspace_id", workspace.workspaceId);
+  if (decision.finalize) {
+    await supabase
+      .from("change_requests")
+      .update({
+        status: "approved",
+        stale: false,
+        stale_reason: null,
+      } as never)
+      .eq("id", id)
+      .eq("workspace_id", workspace.workspaceId);
 
-  await applyTokenStatusForCR(
-    supabase,
-    workspace.workspaceId,
-    id,
-    "approved",
-    ["in_review", "draft"],
-  );
+    await applyTokenStatusForCR(
+      supabase,
+      workspace.workspaceId,
+      id,
+      "approved",
+      ["in_review", "draft"],
+    );
 
-  await supabase.rpc("record_audit", {
-    ws_id: workspace.workspaceId,
-    p_action: "change_request.approved",
-    p_entity_type: "ChangeRequest",
-    p_entity_id: id,
-  } as never);
+    await supabase.rpc("record_audit", {
+      ws_id: workspace.workspaceId,
+      p_action: "change_request.approved",
+      p_entity_type: "ChangeRequest",
+      p_entity_id: id,
+    } as never);
+
+    if (cr.author_id && cr.author_id !== user.id) {
+      await supabase.rpc("notify_user", {
+        ws_id: workspace.workspaceId,
+        p_recipient: cr.author_id,
+        p_kind: "change_request.approved",
+        p_entity_type: "ChangeRequest",
+        p_entity_id: id,
+        p_title: `${cr.short_id} approved`,
+        p_body: cr.title,
+        p_link: `/change-requests/${id}`,
+      } as never);
+    }
+  }
 
   revalidatePath(`/change-requests/${id}`);
   revalidatePath("/change-requests");
@@ -324,6 +537,7 @@ export async function approveChangeRequest(formData: FormData) {
 
 export async function requestChangesOnCR(formData: FormData) {
   const id = String(formData.get("id"));
+  const comment = String(formData.get("comment") ?? "").trim() || null;
   const { supabase, workspace, user } = await getCurrentWorkspaceOrRedirect();
 
   await supabase.from("reviews").insert({
@@ -331,6 +545,7 @@ export async function requestChangesOnCR(formData: FormData) {
     workspace_id: workspace.workspaceId,
     reviewer_id: user.id,
     decision: "request_changes",
+    comment,
   } as never);
 
   await supabase
@@ -347,5 +562,140 @@ export async function requestChangesOnCR(formData: FormData) {
     ["in_review", "approved"],
   );
 
+  const { data: crRow } = await supabase
+    .from("change_requests")
+    .select("short_id, title, author_id")
+    .eq("id", id)
+    .eq("workspace_id", workspace.workspaceId)
+    .single();
+  if (crRow) {
+    const cr = crRow as {
+      short_id: string;
+      title: string;
+      author_id: string | null;
+    };
+    if (cr.author_id && cr.author_id !== user.id) {
+      await supabase.rpc("notify_user", {
+        ws_id: workspace.workspaceId,
+        p_recipient: cr.author_id,
+        p_kind: "change_request.changes_requested",
+        p_entity_type: "ChangeRequest",
+        p_entity_id: id,
+        p_title: `${cr.short_id} needs changes`,
+        p_body: comment ?? cr.title,
+        p_link: `/change-requests/${id}`,
+      } as never);
+    }
+  }
+
   revalidatePath(`/change-requests/${id}`);
+}
+
+/**
+ * Update mutable CR metadata (migration notes today). Author or reviewer+.
+ */
+export async function updateChangeRequestMeta(formData: FormData) {
+  const id = String(formData.get("id"));
+  const migrationNotes = String(formData.get("migrationNotes") ?? "").trim();
+  const { supabase, workspace } = await getCurrentWorkspaceOrRedirect();
+  await supabase
+    .from("change_requests")
+    .update({ migration_notes: migrationNotes || null } as never)
+    .eq("id", id)
+    .eq("workspace_id", workspace.workspaceId);
+  revalidatePath(`/change-requests/${id}`);
+}
+
+/**
+ * Add a new lifecycle item (deprecate / archive / restore) to an open CR for a
+ * specific token. UI surfaces these as buttons on the token detail page; we
+ * always create a brand-new single-item CR rather than mutating an existing
+ * one to keep the audit trail clean.
+ */
+export async function createLifecycleCR(formData: FormData) {
+  const tokenId = String(formData.get("tokenId"));
+  const kind = String(formData.get("kind"));
+  if (!["deprecate", "archive", "restore"].includes(kind)) {
+    throw new Error(`Unsupported lifecycle action: ${kind}`);
+  }
+
+  const { supabase, workspace, user } = await getCurrentWorkspaceOrRedirect();
+
+  const { data: tokenRow } = await supabase
+    .from("tokens")
+    .select("id, name, type, level, current_value, status")
+    .eq("id", tokenId)
+    .eq("workspace_id", workspace.workspaceId)
+    .single();
+  if (!tokenRow) throw new Error("Token not found.");
+  const tok = tokenRow as {
+    id: string;
+    name: string;
+    type: string;
+    level: string;
+    current_value: string | null;
+    status: string;
+  };
+
+  const { count } = await supabase
+    .from("change_requests")
+    .select("*", { count: "exact", head: true })
+    .eq("workspace_id", workspace.workspaceId);
+  const shortId = `CR-${String((count ?? 0) + 1).padStart(3, "0")}`;
+
+  const verb =
+    kind === "deprecate"
+      ? "Deprecate"
+      : kind === "archive"
+        ? "Archive"
+        : "Restore";
+  const breaking = kind !== "restore";
+
+  const { data: cr, error: crErr } = await supabase
+    .from("change_requests")
+    .insert({
+      workspace_id: workspace.workspaceId,
+      short_id: shortId,
+      title: `${verb} ${tok.name}`,
+      status: "open",
+      breaking,
+      author_id: user.id,
+    } as never)
+    .select("id, short_id, title")
+    .single();
+  if (crErr || !cr) throw new Error(crErr?.message ?? "Failed to create CR.");
+  const crRow = cr as { id: string; short_id: string; title: string };
+
+  await supabase.from("change_request_items").insert({
+    change_request_id: crRow.id,
+    workspace_id: workspace.workspaceId,
+    kind,
+    token_id: tok.id,
+    token_name: tok.name,
+    token_type: tok.type,
+    token_level: tok.level,
+    before_value: tok.current_value,
+    after_value: tok.current_value,
+    position: 0,
+  } as never);
+
+  await supabase.rpc("record_audit", {
+    ws_id: workspace.workspaceId,
+    p_action: "change_request.submitted",
+    p_entity_type: "ChangeRequest",
+    p_entity_id: crRow.id,
+    p_after: { kind, token_name: tok.name },
+  } as never);
+
+  await dispatchSubmittedNotification(
+    supabase,
+    workspace.workspaceId,
+    crRow.id,
+    crRow.short_id,
+    crRow.title,
+  );
+
+  revalidatePath("/change-requests");
+  revalidatePath(`/tokens/${tok.id}`);
+  redirect(`/change-requests/${crRow.id}`);
 }
