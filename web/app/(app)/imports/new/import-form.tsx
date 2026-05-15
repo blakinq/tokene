@@ -2,7 +2,7 @@
 
 import { useActionState, useRef, useState } from "react";
 
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Alert, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import {
@@ -16,21 +16,23 @@ import { Textarea } from "@/components/ui/textarea";
 import { Spinner } from "@/components/ui/spinner";
 
 import {
-  importTokensAction,
-  type ImportState,
+  parseImportAction,
+  type ImportParseState,
 } from "@/app/(app)/actions/imports";
 
 export function ImportForm() {
-  const [state, action, pending] = useActionState<ImportState, FormData>(
-    importTokensAction,
+  const [state, action, pending] = useActionState<ImportParseState, FormData>(
+    parseImportAction,
     null,
   );
   const [content, setContent] = useState("");
+  const [filename, setFilename] = useState("");
   const fileRef = useRef<HTMLInputElement | null>(null);
 
   function onFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
+    setFilename(file.name);
     const reader = new FileReader();
     reader.onload = () => {
       const text = typeof reader.result === "string" ? reader.result : "";
@@ -41,21 +43,10 @@ export function ImportForm() {
 
   return (
     <form action={action}>
+      <input type="hidden" name="filename" value={filename} />
       <Card>
         <CardContent>
           <FieldGroup>
-            <Field>
-              <FieldLabel htmlFor="title">
-                Change request title{" "}
-                <span className="text-muted-foreground">(optional)</span>
-              </FieldLabel>
-              <Input
-                id="title"
-                name="title"
-                placeholder="Import from marketing-tokens.json"
-              />
-            </Field>
-
             <Field>
               <FieldLabel>Upload a JSON file</FieldLabel>
               <Input
@@ -94,28 +85,13 @@ export function ImportForm() {
             {state?.ok === false ? (
               <Alert variant="destructive">
                 <AlertTitle>{state.error}</AlertTitle>
-                {state.issues?.length ? (
-                  <AlertDescription>
-                    <ul className="mt-1 list-disc pl-4">
-                      {state.issues.slice(0, 6).map((i, idx) => (
-                        <li key={`${i.token}-${idx}`}>
-                          <span className="font-mono">{i.token}</span>:{" "}
-                          {i.message}
-                        </li>
-                      ))}
-                      {state.issues.length > 6 ? (
-                        <li>+ {state.issues.length - 6} more</li>
-                      ) : null}
-                    </ul>
-                  </AlertDescription>
-                ) : null}
               </Alert>
             ) : null}
 
             <div className="flex justify-end gap-2">
               <Button type="submit" disabled={pending || !content.trim()}>
                 {pending ? <Spinner data-icon="inline-start" /> : null}
-                {pending ? "Parsing…" : "Create change request"}
+                {pending ? "Parsing…" : "Preview import"}
               </Button>
             </div>
           </FieldGroup>

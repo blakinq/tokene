@@ -9,6 +9,7 @@ import { validateToken } from "@/lib/core/validation";
 import { dispatchExternalNotifications } from "@/lib/notifications/dispatch";
 import { getCurrentWorkspaceOrRedirect } from "@/lib/supabase/queries";
 import { loadSchemaConfig } from "@/lib/supabase/schema-config";
+import type { TokenType } from "@/lib/supabase/types";
 
 /**
  * §14.6: keep imports bounded. 1 MiB of JSON is more than enough for a real
@@ -17,21 +18,44 @@ import { loadSchemaConfig } from "@/lib/supabase/schema-config";
 const MAX_IMPORT_BYTES = 1024 * 1024;
 const MAX_IMPORT_TOKENS = 5000;
 
-export type ImportState =
-  | { ok: true; changeRequestId: string }
-  | {
-      ok: false;
-      error: string;
-      issues?: { token: string; message: string }[];
-    }
+export type ImportParseState =
+  | { ok: true; jobId: string }
+  | { ok: false; error: string }
   | null;
 
-export async function importTokensAction(
-  _prev: ImportState,
+type ConflictRow = {
+  kind:
+    | "new_token"
+    | "duplicate_unchanged"
+    | "duplicate_changed"
+    | "invalid_token"
+    | "missing_reference";
+  name: string;
+  type: TokenType;
+  before?: string | null;
+  after?: string;
+  message?: string;
+};
+
+type ParsedTokenRow = {
+  name: string;
+  type: TokenType;
+  value: string;
+  level: "primitive" | "semantic";
+  /** Workspace token id when the import targets an existing token. */
+  token_id?: string;
+};
+
+/**
+ * §14.3 step 1: parse + validate the file, store the result in `import_jobs`,
+ * redirect the user to a preview page. No tokens or CRs are created yet.
+ */
+export async function parseImportAction(
+  _prev: ImportParseState,
   formData: FormData,
-): Promise<ImportState> {
+): Promise<ImportParseState> {
   const raw = String(formData.get("content") ?? "").trim();
-  const title = String(formData.get("title") ?? "").trim();
+  const filename = String(formData.get("filename") ?? "").trim() || null;
 
   if (!raw) return { ok: false, error: "Paste JSON or upload a file first." };
   if (Buffer.byteLength(raw, "utf8") > MAX_IMPORT_BYTES) {
@@ -53,7 +77,6 @@ export async function importTokensAction(
   const { supabase, workspace, user } = await getCurrentWorkspaceOrRedirect();
   const schema = await loadSchemaConfig(supabase, workspace.workspaceId);
 
-  // Pull existing tokens by name for diffing + validation.
   const { data: existing } = await supabase
     .from("tokens")
     .select("id, name, current_value")
@@ -66,71 +89,178 @@ export async function importTokensAction(
     tokensByName.set(r.name, r.current_value ?? "");
     existingByName.set(r.name, { id: r.id, value: r.current_value });
   }
-  // Seed tokensByName with the incoming tokens so references resolve within the file.
   for (const t of parsed.tokens) {
     if (!tokensByName.has(t.name)) tokensByName.set(t.name, t.value);
   }
 
-  // Validate and split into add / edit / skip-unchanged.
-  const issues: { token: string; message: string }[] = [];
-  type Plan =
-    | { kind: "add"; name: string; type: string; value: string }
-    | {
-        kind: "edit";
-        tokenId: string;
-        name: string;
-        type: string;
-        before: string | null;
-        after: string;
-      };
-  const plan: Plan[] = [];
+  const conflicts: ConflictRow[] = [];
+  const usable: ParsedTokenRow[] = [];
 
   for (const t of parsed.tokens) {
-    const ex = existingByName.get(t.name);
     const v = validateToken({
       name: t.name,
       type: t.type,
       value: t.value,
       tokensByName,
-      existingNames: new Set(), // we'll handle dupes via plan
       schema,
     });
     const errs = v.issues.filter((i) => i.severity === "error");
     if (errs.length > 0) {
-      issues.push({ token: t.name, message: errs[0].message });
+      const first = errs[0];
+      conflicts.push({
+        kind: first.code.startsWith("ref.") ? "missing_reference" : "invalid_token",
+        name: t.name,
+        type: t.type,
+        message: first.message,
+      });
       continue;
     }
+
+    const ex = existingByName.get(t.name);
+    const refs = extractReferences(t.value);
+    const level: ParsedTokenRow["level"] = refs.length === 0 ? "primitive" : "semantic";
+
     if (ex) {
-      if ((ex.value ?? "") === t.value) continue; // unchanged
-      plan.push({
-        kind: "edit",
-        tokenId: ex.id,
+      if ((ex.value ?? "") === t.value) {
+        conflicts.push({
+          kind: "duplicate_unchanged",
+          name: t.name,
+          type: t.type,
+          before: ex.value,
+          after: t.value,
+        });
+      } else {
+        conflicts.push({
+          kind: "duplicate_changed",
+          name: t.name,
+          type: t.type,
+          before: ex.value,
+          after: t.value,
+        });
+        usable.push({
+          name: t.name,
+          type: t.type,
+          value: t.value,
+          level,
+          token_id: ex.id,
+        });
+      }
+    } else {
+      conflicts.push({
+        kind: "new_token",
         name: t.name,
         type: t.type,
-        before: ex.value,
         after: t.value,
       });
-    } else {
-      plan.push({
-        kind: "add",
-        name: t.name,
-        type: t.type,
-        value: t.value,
-      });
+      usable.push({ name: t.name, type: t.type, value: t.value, level });
     }
   }
 
-  if (issues.length > 0) {
-    return { ok: false, error: "Some tokens failed validation.", issues };
-  }
-  if (plan.length === 0) {
-    return {
-      ok: false,
-      error: "Nothing to import — every token in the file matches what's already here.",
-    };
+  const { data: job, error: jobErr } = await supabase
+    .from("import_jobs")
+    .insert({
+      workspace_id: workspace.workspaceId,
+      created_by: user.id,
+      source_filename: filename,
+      raw_payload: raw,
+      parsed_tokens: usable as never,
+      conflicts: conflicts as never,
+    } as never)
+    .select("id")
+    .single();
+
+  if (jobErr || !job) {
+    return { ok: false, error: jobErr?.message ?? "Failed to save import job." };
   }
 
-  // Create the change request first.
+  const jobId = (job as { id: string }).id;
+  revalidatePath("/imports");
+  redirect(`/imports/${jobId}`);
+}
+
+/**
+ * §14.3 step 2: user confirmed the preview — turn the parsed job into a CR.
+ */
+export async function commitImportJobAction(formData: FormData): Promise<void> {
+  const jobId = String(formData.get("jobId") ?? "").trim();
+  const title = String(formData.get("title") ?? "").trim();
+  if (!jobId) throw new Error("Missing job id.");
+
+  const { supabase, workspace, user } = await getCurrentWorkspaceOrRedirect();
+
+  const { data: jobRow } = await supabase
+    .from("import_jobs")
+    .select("id, status, parsed_tokens, source_filename")
+    .eq("id", jobId)
+    .eq("workspace_id", workspace.workspaceId)
+    .maybeSingle();
+  const job = jobRow as {
+    id: string;
+    status: string;
+    parsed_tokens: ParsedTokenRow[];
+    source_filename: string | null;
+  } | null;
+  if (!job) throw new Error("Import job not found.");
+  if (job.status !== "parsed") {
+    throw new Error(`Import job is ${job.status}.`);
+  }
+
+  const usable = job.parsed_tokens ?? [];
+  if (usable.length === 0) {
+    throw new Error("Nothing to import — every parsed token was a duplicate or invalid.");
+  }
+
+  // Look up token ids for adds (where token_id wasn't populated at parse time
+  // because the token didn't exist yet).
+  type Plan =
+    | { kind: "add"; name: string; type: string; level: string; value: string }
+    | {
+        kind: "edit";
+        tokenId: string;
+        name: string;
+        type: string;
+        level: string;
+        before: string | null;
+        after: string;
+      };
+  const adds = usable.filter((u) => !u.token_id);
+  const edits = usable.filter((u) => !!u.token_id);
+
+  // Pull current values for the edit set to populate before_value.
+  let beforeByName = new Map<string, string | null>();
+  if (edits.length > 0) {
+    const { data: rows } = await supabase
+      .from("tokens")
+      .select("name, current_value")
+      .eq("workspace_id", workspace.workspaceId)
+      .in("name", edits.map((e) => e.name));
+    for (const r of (rows ?? []) as Array<{
+      name: string;
+      current_value: string | null;
+    }>) {
+      beforeByName.set(r.name, r.current_value);
+    }
+  }
+
+  const plan: Plan[] = [
+    ...adds.map((a) => ({
+      kind: "add" as const,
+      name: a.name,
+      type: a.type,
+      level: a.level,
+      value: a.value,
+    })),
+    ...edits.map((e) => ({
+      kind: "edit" as const,
+      tokenId: e.token_id!,
+      name: e.name,
+      type: e.type,
+      level: e.level,
+      before: beforeByName.get(e.name) ?? null,
+      after: e.value,
+    })),
+  ];
+
   const { count } = await supabase
     .from("change_requests")
     .select("*", { count: "exact", head: true })
@@ -139,8 +269,6 @@ export async function importTokensAction(
   const shortId = `CR-${String((count ?? 0) + 1).padStart(3, "0")}`;
   const finalTitle = title || `Import ${plan.length} tokens`;
 
-  // §8.5: any value-changing edit on existing tokens is breaking. Pure adds
-  // (new draft tokens) aren't.
   const breaking = plan.some(
     (p) => p.kind === "edit" && (p.before ?? "") !== p.after,
   );
@@ -151,7 +279,7 @@ export async function importTokensAction(
       workspace_id: workspace.workspaceId,
       short_id: shortId,
       title: finalTitle,
-      description: `Imported from JSON. ${plan.filter((p) => p.kind === "add").length} new, ${plan.filter((p) => p.kind === "edit").length} edited.`,
+      description: `Imported${job.source_filename ? ` from ${job.source_filename}` : ""}. ${adds.length} new, ${edits.length} edited.`,
       status: "open",
       breaking,
       author_id: user.id,
@@ -160,26 +288,22 @@ export async function importTokensAction(
     .single();
 
   if (crErr || !cr) {
-    return { ok: false, error: crErr?.message ?? "Failed to create change request." };
+    throw new Error(crErr?.message ?? "Failed to create change request.");
   }
   const crRow = cr as { id: string; short_id: string; title: string };
   const crId = crRow.id;
 
-  // For each plan entry, create the draft token (if `add`) and a change_request_item.
   let position = 0;
   for (const step of plan) {
     let tokenId: string;
-    let tokenLevel = "primitive";
     if (step.kind === "add") {
-      const refs = extractReferences(step.value);
-      tokenLevel = refs.length === 0 ? "primitive" : "semantic";
       const { data: inserted, error: insErr } = await supabase
         .from("tokens")
         .insert({
           workspace_id: workspace.workspaceId,
           name: step.name,
           type: step.type,
-          level: tokenLevel,
+          level: step.level,
           status: "draft",
           current_value: step.value,
           current_resolved_value: step.value,
@@ -188,12 +312,10 @@ export async function importTokensAction(
         } as never)
         .select("id")
         .single();
-
       if (insErr || !inserted) {
-        return {
-          ok: false,
-          error: `Failed to create token ${step.name}: ${insErr?.message ?? "unknown"}`,
-        };
+        throw new Error(
+          `Failed to create token ${step.name}: ${insErr?.message ?? "unknown"}`,
+        );
       }
       tokenId = (inserted as { id: string }).id;
     } else {
@@ -207,13 +329,12 @@ export async function importTokensAction(
       token_id: tokenId,
       token_name: step.name,
       token_type: step.type,
-      token_level: tokenLevel,
+      token_level: step.level,
       before_value: step.kind === "edit" ? step.before : null,
       after_value: step.kind === "edit" ? step.after : step.value,
       position: position++,
     } as never);
 
-    // Newly-added drafts ride the same lifecycle as a user-submitted CR.
     if (step.kind === "add") {
       await supabase
         .from("tokens")
@@ -224,6 +345,16 @@ export async function importTokensAction(
     }
   }
 
+  await supabase
+    .from("import_jobs")
+    .update({
+      status: "committed",
+      change_request_id: crId,
+      committed_at: new Date().toISOString(),
+    } as never)
+    .eq("id", jobId)
+    .eq("workspace_id", workspace.workspaceId);
+
   await supabase.rpc("record_audit", {
     ws_id: workspace.workspaceId,
     p_action: "import.created",
@@ -231,25 +362,26 @@ export async function importTokensAction(
     p_entity_id: crId,
     p_after: {
       count: plan.length,
-      added: plan.filter((p) => p.kind === "add").length,
-      edited: plan.filter((p) => p.kind === "edit").length,
+      added: adds.length,
+      edited: edits.length,
+      job_id: jobId,
     },
   } as never);
 
   await supabase.rpc("notify_workspace", {
     ws_id: workspace.workspaceId,
-    p_kind: "change_request.submitted",
+    p_kind: "import.completed",
     p_entity_type: "ChangeRequest",
     p_entity_id: crId,
-    p_title: `${crRow.short_id} ready for review`,
+    p_title: `Import ready for review (${plan.length} tokens)`,
     p_body: crRow.title,
     p_link: `/change-requests/${crId}`,
     p_exclude_actor: true,
     p_role_at_least: "reviewer",
   } as never);
   await dispatchExternalNotifications(workspace.workspaceId, {
-    kind: "change_request.submitted",
-    title: `${crRow.short_id} ready for review`,
+    kind: "import.completed",
+    title: `Import ready for review (${plan.length} tokens)`,
     body: crRow.title,
     link: `/change-requests/${crId}`,
     entityType: "ChangeRequest",
@@ -259,4 +391,18 @@ export async function importTokensAction(
   revalidatePath("/imports");
   revalidatePath("/change-requests");
   redirect(`/change-requests/${crId}`);
+}
+
+export async function discardImportJobAction(formData: FormData): Promise<void> {
+  const jobId = String(formData.get("jobId") ?? "").trim();
+  if (!jobId) return;
+  const { supabase, workspace } = await getCurrentWorkspaceOrRedirect();
+  await supabase
+    .from("import_jobs")
+    .update({ status: "discarded" } as never)
+    .eq("id", jobId)
+    .eq("workspace_id", workspace.workspaceId)
+    .eq("status", "parsed");
+  revalidatePath("/imports");
+  redirect("/imports");
 }

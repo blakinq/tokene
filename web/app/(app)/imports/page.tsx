@@ -27,59 +27,48 @@ import {
 } from "@/components/ui/table";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { SiteHeader } from "@/components/site-header";
-import { ChangeRequestStatusBadge } from "@/components/status-badge";
 import { formatRelativeDate } from "@/lib/mock-data";
 import { formatActorName, loadProfiles } from "@/lib/supabase/profiles";
 import { getCurrentWorkspaceOrRedirect } from "@/lib/supabase/queries";
-import type { ChangeRequestStatus } from "@/lib/supabase/types";
+import type { ImportJobStatus } from "@/lib/supabase/types";
 
-type AuditEntry = {
+type JobRow = {
   id: string;
-  entity_id: string | null;
-  actor_id: string | null;
+  status: ImportJobStatus;
+  source_filename: string | null;
+  parsed_tokens: Array<unknown>;
+  conflicts: Array<unknown>;
+  change_request_id: string | null;
+  created_by: string | null;
   created_at: string;
-  after_value: { count?: number; added?: number; edited?: number } | null;
 };
 
-type CRRow = {
-  id: string;
-  short_id: string;
-  title: string;
-  status: ChangeRequestStatus;
+const STATUS_LABEL: Record<
+  ImportJobStatus,
+  { label: string; variant: "default" | "secondary" | "destructive" | "outline" }
+> = {
+  parsed: { label: "Awaiting review", variant: "secondary" },
+  committed: { label: "Committed", variant: "default" },
+  discarded: { label: "Discarded", variant: "outline" },
 };
 
 export default async function ImportsPage() {
   const { supabase, workspace } = await getCurrentWorkspaceOrRedirect();
 
-  const { data: entriesRaw } = await supabase
-    .from("audit_logs")
-    .select("id, entity_id, actor_id, created_at, after_value")
+  const { data: jobsRaw } = await supabase
+    .from("import_jobs")
+    .select(
+      "id, status, source_filename, parsed_tokens, conflicts, change_request_id, created_by, created_at",
+    )
     .eq("workspace_id", workspace.workspaceId)
-    .eq("action", "import.created")
     .order("created_at", { ascending: false })
     .limit(50);
 
-  const entries = (entriesRaw ?? []) as unknown as AuditEntry[];
+  const jobs = (jobsRaw ?? []) as unknown as JobRow[];
   const profilesById = await loadProfiles(
     supabase,
-    entries.map((e) => e.actor_id),
+    jobs.map((j) => j.created_by),
   );
-
-  const crIds = entries
-    .map((e) => e.entity_id)
-    .filter((x): x is string => Boolean(x));
-
-  let crsById = new Map<string, CRRow>();
-  if (crIds.length > 0) {
-    const { data: crData } = await supabase
-      .from("change_requests")
-      .select("id, short_id, title, status")
-      .eq("workspace_id", workspace.workspaceId)
-      .in("id", crIds);
-    crsById = new Map(
-      ((crData ?? []) as unknown as CRRow[]).map((c) => [c.id, c]),
-    );
-  }
 
   return (
     <>
@@ -100,8 +89,8 @@ export default async function ImportsPage() {
           </span>
           <h1 className="text-3xl font-semibold tracking-tight">Imports</h1>
           <p className="text-muted-foreground max-w-2xl text-sm">
-            Bring tokens in from JSON. Every import is parsed safely and turned
-            into a draft change request before becoming a release.
+            Bring tokens in from JSON. Each upload is parsed and previewed
+            before becoming a draft change request.
           </p>
         </div>
 
@@ -134,11 +123,11 @@ export default async function ImportsPage() {
               Recent imports
             </CardTitle>
             <CardDescription>
-              Each import is linked to the change request it created.
+              Each import is linked to the change request it created (if any).
             </CardDescription>
           </CardHeader>
           <CardContent>
-            {entries.length === 0 ? (
+            {jobs.length === 0 ? (
               <Empty>
                 <EmptyHeader>
                   <EmptyMedia variant="icon">
@@ -154,21 +143,20 @@ export default async function ImportsPage() {
               <Table>
                 <TableHeader>
                   <TableRow className="hover:bg-transparent">
-                    <TableHead>Change request</TableHead>
+                    <TableHead>Source</TableHead>
                     <TableHead>Status</TableHead>
                     <TableHead className="text-right">Tokens</TableHead>
-                    <TableHead className="text-right">Added</TableHead>
-                    <TableHead className="text-right">Edited</TableHead>
-                    <TableHead>Imported</TableHead>
+                    <TableHead className="text-right">Conflicts</TableHead>
+                    <TableHead>Created</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {entries.map((entry) => {
-                    const cr = entry.entity_id
-                      ? crsById.get(entry.entity_id)
-                      : undefined;
+                  {jobs.map((j) => {
+                    const meta = STATUS_LABEL[j.status];
                     const actorName = formatActorName(
-                      entry.actor_id ? profilesById.get(entry.actor_id) : undefined,
+                      j.created_by
+                        ? profilesById.get(j.created_by)
+                        : undefined,
                     );
                     const initials = actorName
                       .split(/\s+/)
@@ -177,37 +165,28 @@ export default async function ImportsPage() {
                       .join("")
                       .toUpperCase();
                     return (
-                      <TableRow key={entry.id}>
+                      <TableRow key={j.id}>
                         <TableCell>
-                          {cr ? (
-                            <Link
-                              href={`/change-requests/${cr.id}`}
-                              className="flex items-center gap-2 hover:underline"
-                            >
-                              <span className="text-muted-foreground font-mono text-xs">
-                                {cr.short_id}
-                              </span>
-                              <span className="text-sm">{cr.title}</span>
-                            </Link>
-                          ) : (
-                            <span className="text-muted-foreground text-xs">
-                              (deleted)
-                            </span>
-                          )}
+                          <Link
+                            href={`/imports/${j.id}`}
+                            className="font-mono text-xs hover:underline"
+                          >
+                            {j.source_filename ?? "(paste)"}
+                          </Link>
                         </TableCell>
                         <TableCell>
-                          {cr ? (
-                            <ChangeRequestStatusBadge status={cr.status} />
-                          ) : null}
+                          <Badge
+                            variant={meta.variant}
+                            className="font-normal"
+                          >
+                            {meta.label}
+                          </Badge>
                         </TableCell>
                         <TableCell className="text-right font-mono text-xs">
-                          {entry.after_value?.count ?? "—"}
+                          {j.parsed_tokens.length}
                         </TableCell>
                         <TableCell className="text-right font-mono text-xs">
-                          {entry.after_value?.added ?? 0}
-                        </TableCell>
-                        <TableCell className="text-right font-mono text-xs">
-                          {entry.after_value?.edited ?? 0}
+                          {j.conflicts.length}
                         </TableCell>
                         <TableCell>
                           <div className="flex items-center gap-2">
@@ -217,7 +196,7 @@ export default async function ImportsPage() {
                               </AvatarFallback>
                             </Avatar>
                             <span className="text-muted-foreground text-xs">
-                              {actorName} · {formatRelativeDate(entry.created_at)}
+                              {actorName} · {formatRelativeDate(j.created_at)}
                             </span>
                           </div>
                         </TableCell>
@@ -230,12 +209,12 @@ export default async function ImportsPage() {
           </CardContent>
         </Card>
 
-        {entries.length > 0 ? (
+        {jobs.length > 0 ? (
           <Card>
             <CardContent>
               <Badge variant="outline" className="font-normal">
-                Showing the latest {entries.length} import
-                {entries.length === 1 ? "" : "s"}.
+                Showing the latest {jobs.length} import
+                {jobs.length === 1 ? "" : "s"}.
               </Badge>
             </CardContent>
           </Card>
