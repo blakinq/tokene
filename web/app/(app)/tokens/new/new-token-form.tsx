@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState } from "react";
+import { useActionState, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -31,6 +31,8 @@ import {
   type CreateTokenState,
 } from "@/app/(app)/actions/tokens";
 
+import { ValueEditor } from "./value-editor";
+
 const types = [
   "color",
   "spacing",
@@ -47,11 +49,38 @@ const types = [
 
 const levels = ["primitive", "semantic", "component"];
 
+function describeValue(type: string) {
+  switch (type) {
+    case "color":
+      return "Pick a color, paste a hex/rgb/hsl, or reference another token.";
+    case "spacing":
+    case "sizing":
+    case "radius":
+    case "border_width":
+      return "Numeric length with a unit (px, rem, %, …).";
+    case "duration":
+      return "Time value in ms or s (e.g. 150ms).";
+    case "opacity":
+      return "Number between 0 and 1.";
+    case "z_index":
+      return "Integer stacking order.";
+    case "easing":
+      return "CSS timing function — preset or cubic-bezier().";
+    case "typography":
+      return "Composite font value: weight size/line-height family.";
+    case "shadow":
+      return "CSS box-shadow value.";
+    default:
+      return "Literal value or a reference to another token.";
+  }
+}
+
 export function NewTokenForm() {
   const [state, action, pending] = useActionState<CreateTokenState, FormData>(
     createTokenAction,
     null,
   );
+  const [type, setType] = useState("color");
 
   const fieldErrors = new Map<string, string>();
   if (state && state.ok === false && state.issues) {
@@ -90,7 +119,7 @@ export function NewTokenForm() {
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
               <Field>
                 <FieldLabel htmlFor="type">Type</FieldLabel>
-                <Select name="type" defaultValue="color">
+                <Select name="type" value={type} onValueChange={setType}>
                   <SelectTrigger id="type">
                     <SelectValue />
                   </SelectTrigger>
@@ -127,22 +156,15 @@ export function NewTokenForm() {
             </div>
 
             <Field data-invalid={fieldErrors.has("value") || undefined}>
-              <FieldLabel htmlFor="value">Value</FieldLabel>
-              <Input
-                id="value"
-                name="value"
-                placeholder="#005FCC  or  {color.blue.600}"
-                className="font-mono"
-                aria-invalid={fieldErrors.has("value") || undefined}
-                required
-              />
+              <FieldLabel>Value</FieldLabel>
+              <ValueEditor type={type} invalid={fieldErrors.has("value")} />
               <FieldDescription
                 className={
                   fieldErrors.has("value") ? "text-destructive" : undefined
                 }
               >
                 {fieldErrors.get("value") ??
-                  "Literal value (e.g. #005FCC, 16px, 150ms) or a reference (e.g. {color.blue.600})."}
+                  describeValue(type)}
               </FieldDescription>
             </Field>
 
